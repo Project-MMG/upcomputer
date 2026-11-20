@@ -10,11 +10,15 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import {
   ProjectToolError,
   ProjectToolGrant,
+  ProjectToolAppGrant,
   type ProjectToolAction,
   type ProjectToolActionDetails,
   type ProjectToolActionsInput,
+  type ProjectToolApp,
+  type ProjectToolAppGrantInput,
   type ProjectToolAppsInput,
   type ProjectToolAssignment,
+  type ProjectToolAudience,
   type ProjectToolConnectionInput,
   type ProjectToolGrantInput,
   type ProjectToolSettings,
@@ -52,6 +56,10 @@ interface AccountRow {
 const grantJson = Schema.fromJsonString(ProjectToolGrant);
 const decodeGrant = Schema.decodeUnknownEffect(grantJson);
 const encodeGrant = Schema.encodeEffect(grantJson);
+const appGrantJson = Schema.fromJsonString(ProjectToolAppGrant);
+const decodeAppGrant = Schema.decodeUnknownEffect(appGrantJson);
+const encodeAppGrant = Schema.encodeEffect(appGrantJson);
+const searchPageSize = 12;
 
 const storageError = (cause: unknown) =>
   new ProjectToolError({ code: "storage-unavailable", cause });
@@ -59,7 +67,7 @@ const storageError = (cause: unknown) =>
 const fail = (code: ProjectToolError["code"]): AccessError =>
   Effect.fail(new ProjectToolError({ code }));
 
-const includesBot = (grant: ProjectToolGrant, botId: TaskAgentId) =>
+const includesBot = (grant: { readonly audience: ProjectToolAudience }, botId: TaskAgentId) =>
   grant.audience.kind === "all" || grant.audience.botIds.includes(botId);
 
 const sameActionAccess = (saved: ProjectToolAction, current: ProjectToolAction) =>
@@ -84,11 +92,22 @@ export class ProjectTools extends Context.Service<
       input: ProjectToolConnectionInput,
     ) => Effect.Effect<{ readonly url: string | null }, ProjectToolError>;
     readonly grant: (input: ProjectToolGrantInput) => Effect.Effect<void, ProjectToolError>;
+    readonly grantApp: (input: ProjectToolAppGrantInput) => Effect.Effect<void, ProjectToolError>;
     readonly search: (
       scope: Invocation,
-      input: { readonly query?: string | undefined; readonly offset?: number | undefined },
+      input: {
+        readonly query?: string | undefined;
+        readonly offset?: number | undefined;
+        readonly app?: string | undefined;
+        readonly cursor?: string | undefined;
+      },
     ) => Effect.Effect<
-      { readonly actions: ReadonlyArray<AssignedAction>; readonly nextOffset: number | null },
+      {
+        readonly actions: ReadonlyArray<AssignedAction>;
+        readonly nextOffset: number | null;
+        readonly apps?: ReadonlyArray<ProjectToolApp>;
+        readonly nextCursor?: string | null;
+      },
       ProjectToolError
     >;
     readonly execute: (
@@ -125,6 +144,17 @@ const make = Effect.gen(function* () {
       .filter((bot) => bot.projectId === id)
       .map(({ agent }) => ({ id: agent.id, name: agent.name }));
   });
+  const validateAudience = Effect.fn("ProjectTools.validateAudience")(function* (
+    projectId: ProjectId,
+    audience: ProjectToolGrantInput["audience"],
+  ) {
+    if (audience?.kind !== "selected") return audience;
+    const botIds = Arr.dedupe(audience.botIds);
+    if (!Arr.isArrayNonEmpty(botIds)) return null;
+    const allowed = new Set((yield* projectBots(projectId)).map(({ id }) => id));
+    if (botIds.some((id) => !allowed.has(id))) return yield* fail("invalid-bots");
+    return { kind: "selected", botIds } as const;
+  });
   const selectAccounts = sql<AccountRow>`SELECT app, account_id AS "accountId",
     account_label AS label, pending_id AS "pendingId" FROM project_tool_accounts`;
 
@@ -147,6 +177,18 @@ const make = Effect.gen(function* () {
       decodeGrant(json).pipe(Effect.mapError(storageError)),
     );
   });
+  const listAppGrants = Effect.fn("ProjectTools.listAppGrants")(function* (projectId: ProjectId) {
+    const rows = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
+      FROM project_tool_app_grants WHERE project_id = ${projectId} ORDER BY app`.pipe(
+      Effect.mapError(storageError),
+    );
+    return yield* Effect.forEach(rows, ({ json }) =>
+      decodeAppGrant(json).pipe(
+        Effect.mapError(storageError),
+        Effect.map((grant) => ({ grant, json })),
+      ),
+    );
+  });
   const action = Effect.fn("ProjectTools.catalogAction")(function* (slug: string) {
     const found = yield* composio.action(slug);
     if (!found) return yield* fail("action-unavailable");
@@ -160,6 +202,30 @@ const make = Effect.gen(function* () {
     const account = yield* composio.account(id, userId(projectId), app);
     if (account?.status !== "active") return yield* fail("account-unavailable");
     return account;
+  });
+  const requireAccount = Effect.fn("ProjectTools.requireAccount")(function* (
+    projectId: ProjectId,
+    app: string,
+  ) {
+    const row = yield* getAccount(projectId, app);
+    if (!row?.accountId) return yield* fail("account-unavailable");
+    return yield* activeAccount(projectId, app, row.accountId);
+  });
+  const connectedApps = Effect.fn("ProjectTools.connectedApps")(function* (
+    projectId: ProjectId,
+    apps: ReadonlySet<string>,
+  ) {
+    return new Set(
+      yield* Effect.forEach(
+        apps,
+        (app) =>
+          requireAccount(projectId, app).pipe(
+            Effect.as(app),
+            Effect.orElseSucceed(() => null),
+          ),
+        { concurrency: 4 },
+      ),
+    );
   });
 
   const confirmCaller = Effect.fn("ProjectTools.confirmCaller")(function* (scope: Invocation) {
@@ -190,39 +256,57 @@ const make = Effect.gen(function* () {
     } satisfies BotAccess & { readonly runId: string };
   });
 
-  const loadAssignment = Effect.fn("ProjectTools.loadAssignment")(function* (
+  const loadAccess = Effect.fn("ProjectTools.loadAccess")(function* (
     scope: Invocation,
     effect: ProjectToolAction["effect"],
-    slug: string,
+    target: string | ProjectToolActionDetails,
   ) {
     const caller = yield* confirmCaller(scope);
     if (caller.plan && effect === "write") return yield* fail("plan-mode");
+    const slug = typeof target === "string" ? target : target.slug;
     const [row] = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
       FROM project_tool_grants WHERE project_id = ${caller.projectId} AND slug = ${slug}`.pipe(
       Effect.mapError(storageError),
     );
-    if (!row) return yield* fail("not-assigned");
-    const grant = yield* decodeGrant(row.json).pipe(Effect.mapError(storageError));
-    if (!includesBot(grant, caller.botId)) return yield* fail("not-assigned");
-    if (grant.action.effect !== effect) return yield* fail("wrong-action-type");
-    const accountId = grant.action.requiresAccount
-      ? ((yield* getAccount(caller.projectId, grant.action.app))?.accountId ?? null)
+    const stored = row ? yield* decodeGrant(row.json).pipe(Effect.mapError(storageError)) : null;
+    const direct = stored && includesBot(stored, caller.botId) ? stored : null;
+    const full = direct
+      ? []
+      : (yield* listAppGrants(caller.projectId)).filter(({ grant }) =>
+          includesBot(grant, caller.botId),
+        );
+    if (!direct && !full.length) return yield* fail("not-assigned");
+    if (direct && direct.action.effect !== effect) return yield* fail("wrong-action-type");
+    const live = typeof target === "string" ? yield* action(slug) : target;
+    const appGrant = full.find(({ grant }) => grant.app.slug === live.app);
+    if (!direct && !appGrant) return yield* fail("not-assigned");
+    if (direct && !sameActionAccess(direct.action, live)) return yield* fail("action-changed");
+    if (live.effect !== effect) return yield* fail("wrong-action-type");
+    const requiresAccount = live.requiresAccount || appGrant?.grant.app.setup === "connect";
+    const accountId = requiresAccount
+      ? ((yield* getAccount(caller.projectId, live.app))?.accountId ?? null)
       : null;
-    if (grant.action.requiresAccount && accountId === null)
-      return yield* fail("account-unavailable");
-    return { ...caller, grant, accountId, policy: row.json };
+    if (requiresAccount && accountId === null) return yield* fail("account-unavailable");
+    return {
+      ...caller,
+      live,
+      accountId,
+      fixedInputs: direct?.fixedInputs ?? {},
+      policy: direct ? row?.json : appGrant?.json,
+    };
   });
 
   return ProjectTools.of({
     settings: Effect.fn("ProjectTools.settings")(function* (projectId) {
       yield* requireProject(projectId);
-      const [configured, savedAccounts, grants, currentBots] = yield* Effect.all(
+      const [configured, savedAccounts, grants, appGrants, currentBots] = yield* Effect.all(
         [
           composio.configured,
           sql<AccountRow>`${selectAccounts} WHERE project_id = ${projectId} ORDER BY app`.pipe(
             Effect.mapError(storageError),
           ),
           listGrants(projectId),
+          listAppGrants(projectId),
           projectBots(projectId),
         ],
         { concurrency: "unbounded" },
@@ -294,7 +378,13 @@ const make = Effect.gen(function* () {
         }
         return { ...grant, status: "available" };
       });
-      return { configured, accounts, assignments, bots: currentBots };
+      return {
+        configured,
+        accounts,
+        assignments,
+        appGrants: appGrants.map(({ grant }) => grant),
+        bots: currentBots,
+      };
     }),
     apps: Effect.fn("ProjectTools.apps")(function* (input) {
       yield* requireProject(input.projectId);
@@ -371,28 +461,16 @@ const make = Effect.gen(function* () {
       yield* lock.withLock(
         projectId,
         Effect.gen(function* () {
-          const botIds = audience?.kind === "selected" ? Arr.dedupe(audience.botIds) : [];
-          if (!audience || (audience.kind === "selected" && !Arr.isArrayNonEmpty(botIds))) {
+          const storedAudience = yield* validateAudience(projectId, audience);
+          if (!storedAudience) {
             yield* sql`DELETE FROM project_tool_grants WHERE project_id = ${projectId} AND slug = ${slug}`.pipe(
               Effect.mapError(storageError),
             );
             return;
           }
           const { inputSchema, ...details } = yield* action(slug);
-          if (details.requiresAccount) {
-            const row = yield* getAccount(projectId, details.app);
-            if (!row?.accountId) return yield* fail("account-unavailable");
-            yield* activeAccount(projectId, details.app, row.accountId);
-          }
+          if (details.requiresAccount) yield* requireAccount(projectId, details.app);
           yield* validate(inputSchema, fixedInputs, true);
-          const storedAudience = Arr.isArrayNonEmpty(botIds)
-            ? ({ kind: "selected", botIds } as const)
-            : ({ kind: "all" } as const);
-          if (storedAudience.kind === "selected") {
-            const allowed = new Set((yield* projectBots(projectId)).map(({ id }) => id));
-            if (storedAudience.botIds.some((id) => !allowed.has(id)))
-              return yield* fail("invalid-bots");
-          }
           const json = yield* encodeGrant({
             action: details,
             audience: storedAudience,
@@ -406,40 +484,101 @@ const make = Effect.gen(function* () {
         }),
       );
     }),
-    search: Effect.fn("ProjectTools.search")(function* (scope, { query, offset = 0 }) {
+    grantApp: Effect.fn("ProjectTools.grantApp")(function* ({ projectId, app, audience }) {
+      yield* requireProject(projectId);
+      yield* lock.withLock(
+        projectId,
+        Effect.gen(function* () {
+          const storedAudience = yield* validateAudience(projectId, audience);
+          if (!storedAudience) {
+            yield* sql`DELETE FROM project_tool_app_grants WHERE project_id = ${projectId} AND app = ${app}`.pipe(
+              Effect.mapError(storageError),
+            );
+            return;
+          }
+          const details = yield* composio.app(app);
+          if (details.setup === "auth-config-required") return yield* fail("auth-config-required");
+          if (details.setup === "connect") yield* requireAccount(projectId, app);
+          const json = yield* encodeAppGrant({ app: details, audience: storedAudience }).pipe(
+            Effect.mapError(storageError),
+          );
+          yield* sql`INSERT INTO project_tool_app_grants (project_id, app, grant_json)
+            VALUES (${projectId}, ${app}, ${json})
+            ON CONFLICT (project_id, app) DO UPDATE SET grant_json = excluded.grant_json`.pipe(
+            Effect.mapError(storageError),
+          );
+        }),
+      );
+    }),
+    search: Effect.fn("ProjectTools.search")(function* (scope, { query, offset = 0, app, cursor }) {
       const { projectId, botId, plan } = yield* confirmCaller(scope);
+      const [savedActions, savedApps] = yield* Effect.all([
+        listGrants(projectId),
+        listAppGrants(projectId),
+      ]);
+      const assigned = savedActions.filter((grant) => includesBot(grant, botId));
+      const full = savedApps.flatMap(({ grant }) => (includesBot(grant, botId) ? [grant.app] : []));
+      const fullApp = full.find(({ slug }) => slug === app);
+      if (fullApp) {
+        const toolkit = fullApp.slug;
+        const connected = yield* connectedApps(projectId, new Set([toolkit]));
+        if (fullApp.setup === "connect" && !connected.has(toolkit)) {
+          return { actions: [], nextOffset: null, nextCursor: null };
+        }
+        const page = yield* composio.actions({
+          app: toolkit,
+          query,
+          cursor,
+          limit: searchPageSize,
+        });
+        const eligible = page.items.filter(
+          (item) =>
+            item.app === toolkit &&
+            (!plan || item.effect === "read") &&
+            (!item.requiresAccount || connected.has(toolkit)),
+        );
+        const details = yield* composio.assignedActions(eligible.map(({ slug }) => slug));
+        const overrides = new Map(assigned.map((grant) => [grant.action.slug, grant]));
+        return {
+          actions: details.flatMap((item) => {
+            if (
+              item.app !== toolkit ||
+              (plan && item.effect !== "read") ||
+              (item.requiresAccount && !connected.has(toolkit))
+            )
+              return [];
+            const override = overrides.get(item.slug);
+            if (override && !sameActionAccess(override.action, item)) return [];
+            return [{ ...item, fixedInputs: Object.keys(override?.fixedInputs ?? {}) }];
+          }),
+          nextOffset: null,
+          nextCursor: page.nextCursor === cursor ? null : page.nextCursor,
+        };
+      }
       const words = query?.toLowerCase().trim().split(/\s+/).filter(Boolean) ?? [];
-      const matches = (yield* listGrants(projectId)).filter((grant) => {
-        const { slug, name, appName, description, effect } = grant.action;
-        if (!includesBot(grant, botId) || (plan && effect !== "read")) return false;
+      const matches = assigned.filter(({ action }) => {
+        const { slug, name, appName, description, effect } = action;
+        if ((app && app !== action.app) || (plan && effect !== "read")) return false;
         const text = `${slug} ${name} ${appName} ${description}`.toLowerCase();
         return words.every((word) => text.includes(word));
       });
-      const page = matches.slice(offset, offset + 12);
-      if (page.length === 0) return { actions: [], nextOffset: null };
+      const page = matches.slice(offset, offset + searchPageSize);
+      const browsableApps = app ? [] : full;
       const current = new Map(
         (yield* composio.assignedActions(page.map(({ action }) => action.slug))).map((item) => [
           item.slug,
           item,
         ]),
       );
-      const apps = new Set(
-        page.filter(({ action }) => action.requiresAccount).map(({ action }) => action.app),
+      const connected = yield* connectedApps(
+        projectId,
+        new Set([
+          ...page.filter(({ action }) => action.requiresAccount).map(({ action }) => action.app),
+          ...browsableApps.filter((toolkit) => toolkit.setup === "connect").map(({ slug }) => slug),
+        ]),
       );
-      const connected = new Set(
-        yield* Effect.forEach(
-          apps,
-          (app) =>
-            Effect.gen(function* () {
-              const row = yield* getAccount(projectId, app);
-              if (!row?.accountId) return null;
-              return yield* activeAccount(projectId, app, row.accountId).pipe(
-                Effect.as(app),
-                Effect.orElseSucceed(() => null),
-              );
-            }),
-          { concurrency: 4 },
-        ),
+      const apps = browsableApps.flatMap(({ slug, name, description, setup }) =>
+        setup === "no-account" || connected.has(slug) ? [{ slug, name, description }] : [],
       );
       return {
         actions: page.flatMap((grant) => {
@@ -451,13 +590,13 @@ const make = Effect.gen(function* () {
             : [];
         }),
         nextOffset: offset + page.length < matches.length ? offset + page.length : null,
+        ...(apps.length ? { apps } : {}),
       };
     }),
     execute: Effect.fn("ProjectTools.execute")(function* (scope, effect, input) {
-      const initial = yield* loadAssignment(scope, effect, input.slug);
-      const live = yield* action(input.slug);
-      if (!sameActionAccess(initial.grant.action, live)) return yield* fail("action-changed");
-      const args = { ...input.arguments, ...initial.grant.fixedInputs };
+      const initial = yield* loadAccess(scope, effect, input.slug);
+      const { live } = initial;
+      const args = { ...input.arguments, ...initial.fixedInputs };
       yield* validate(live.inputSchema, args);
       if (initial.accountId !== null) {
         yield* activeAccount(initial.projectId, live.app, initial.accountId);
@@ -471,7 +610,7 @@ const make = Effect.gen(function* () {
         composio.createActionSession(session),
         (id) =>
           Effect.gen(function* () {
-            const current = yield* loadAssignment(scope, effect, input.slug);
+            const current = yield* loadAccess(scope, effect, live);
             if (
               current.runId !== initial.runId ||
               current.botId !== initial.botId ||

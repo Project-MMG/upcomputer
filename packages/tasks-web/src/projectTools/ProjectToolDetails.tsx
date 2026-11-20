@@ -1,6 +1,9 @@
 import {
   type ProjectToolAction,
   type ProjectToolActionDetails,
+  type ProjectToolApp,
+  type ProjectToolAppGrant,
+  type ProjectToolAppGrantInput,
   type ProjectToolAssignment,
   type ProjectToolConnectionInput,
   type ProjectToolGrantInput,
@@ -8,7 +11,14 @@ import {
   type TaskAgentId,
 } from "@t3tools/tasks-contracts/v1";
 import * as Schema from "effect/Schema";
-import { useCallback, useId, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useId,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 
 import { ensureLocalApi } from "../../../../apps/web/src/localApi.ts";
 import { Alert, AlertDescription } from "../../../../apps/web/src/components/ui/alert.tsx";
@@ -53,22 +63,26 @@ export function InlineError({ children }: { readonly children: ReactNode }) {
   );
 }
 
-export function ProjectToolAccountDialog({
+export function ProjectToolAppDialog({
   app,
   api,
   settings,
   canWrite,
+  canGrantApp,
   onChange,
   onClose,
   onBack,
+  onBrowseActions,
 }: {
   readonly app: string;
   readonly api: ProjectToolsApi;
   readonly settings: ProjectToolSettings;
   readonly canWrite: boolean;
+  readonly canGrantApp: boolean;
   readonly onChange: () => void;
   readonly onClose: () => void;
   readonly onBack?: (() => void) | undefined;
+  readonly onBrowseActions: (app: ProjectToolApp) => void;
 }) {
   const details = useRemoteData(
     useCallback(
@@ -77,14 +91,14 @@ export function ProjectToolAccountDialog({
     ),
   );
   const account = settings.accounts.find((item) => item.app === app);
-  const assignments = settings.assignments.filter(
-    ({ action }) => action.app === app && action.requiresAccount,
-  );
+  const assignments = settings.assignments.filter(({ action }) => action.app === app);
+  const appGrant = settings.appGrants?.find(({ app: current }) => current.slug === app);
   const [link, setLink] = useState<string>();
   const [pending, setPending] = useState<ProjectToolConnectionInput["operation"]>();
   const [error, setError] = useState<string>();
+  const appDetails = details.data ?? appGrant?.app;
   const setup = details.data?.setup;
-  const name = details.data?.name ?? assignments[0]?.action.appName ?? app;
+  const name = appDetails?.name ?? assignments[0]?.action.appName ?? app;
 
   const change = async (operation: ProjectToolConnectionInput["operation"]) => {
     if (!canWrite || pending) return;
@@ -118,13 +132,32 @@ export function ProjectToolAccountDialog({
     >
       <DialogPopup>
         <DialogHeader>
-          <DialogTitle>{name} account</DialogTitle>
+          <DialogTitle>{name}</DialogTitle>
           <DialogDescription>{accountLabel(account)}</DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <div className="space-y-4">
             {error || details.error ? <InlineError>{error ?? details.error}</InlineError> : null}
             {details.loading ? <p role="status">Checking app setup…</p> : null}
+            {settings.appGrants && appDetails ? (
+              <AppGrantForm
+                app={app}
+                grant={appGrant}
+                assignments={assignments}
+                bots={settings.bots}
+                canWrite={canGrantApp}
+                ready={
+                  setup === "no-account" ||
+                  (setup === "connect" && account?.account?.status === "connected")
+                }
+                onSave={async (audience) => {
+                  await api.grantApp({ app, audience });
+                  onChange();
+                  onClose();
+                }}
+                onBrowseActions={() => onBrowseActions(appDetails)}
+              />
+            ) : null}
             {setup === "no-account" ? <p>This app has actions that use no account.</p> : null}
             {setup === "auth-config-required" ? (
               <p className="text-sm text-muted-foreground">
@@ -161,7 +194,7 @@ export function ProjectToolAccountDialog({
                 </div>
               </div>
             ) : null}
-            {assignments.length > 0 ? (
+            {!settings.appGrants && assignments.length > 0 ? (
               <div className="space-y-1.5">
                 <h3 className="text-sm font-medium">Actions using this connection</h3>
                 <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
@@ -215,6 +248,156 @@ export function ProjectToolAccountDialog({
         </DialogFooter>
       </DialogPopup>
     </Dialog>
+  );
+}
+
+function BotSelection({
+  bots,
+  selected,
+  disabled,
+  onChange,
+  describe,
+}: {
+  readonly bots: ProjectToolSettings["bots"];
+  readonly selected: ReadonlyArray<TaskAgentId>;
+  readonly disabled: boolean;
+  readonly onChange: Dispatch<SetStateAction<ReadonlyArray<TaskAgentId>>>;
+  readonly describe?: (id: TaskAgentId) => string;
+}) {
+  if (bots.length === 0) {
+    return <p className="pl-6 text-sm text-muted-foreground">This project has no bots yet.</p>;
+  }
+  return (
+    <div className="space-y-2 pl-6">
+      {bots.map((bot) => (
+        <label key={bot.id} className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={selected.includes(bot.id)}
+            aria-label={bot.name}
+            disabled={disabled}
+            onCheckedChange={(checked) =>
+              onChange((ids) => (checked ? [...ids, bot.id] : ids.filter((id) => id !== bot.id)))
+            }
+          />
+          <span>{bot.name}</span>
+          {describe ? (
+            <span className="ml-auto text-muted-foreground">{describe(bot.id)}</span>
+          ) : null}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function AppGrantForm({
+  app,
+  grant,
+  assignments,
+  bots,
+  canWrite,
+  ready,
+  onSave,
+  onBrowseActions,
+}: {
+  readonly app: string;
+  readonly grant: ProjectToolAppGrant | undefined;
+  readonly assignments: ProjectToolSettings["assignments"];
+  readonly bots: ProjectToolSettings["bots"];
+  readonly canWrite: boolean;
+  readonly ready: boolean;
+  readonly onSave: (audience: ProjectToolAppGrantInput["audience"]) => Promise<void>;
+  readonly onBrowseActions: () => void;
+}) {
+  const [audience, setAudience] = useState(grant?.audience.kind ?? "none");
+  const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(
+    grant?.audience.kind === "selected" ? grant.audience.botIds : [],
+  );
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const botIds = bots.filter(({ id }) => selected.includes(id)).map(({ id }) => id);
+  const disabled = !canWrite || pending;
+  const canSave =
+    !disabled &&
+    (audience === "none" ? Boolean(grant) : ready && (audience === "all" || botIds.length > 0));
+
+  return (
+    <div className="space-y-4">
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!canSave) return;
+          setError(undefined);
+          setPending(true);
+          void onSave(
+            audience === "none"
+              ? null
+              : audience === "all"
+                ? { kind: "all" }
+                : { kind: "selected", botIds },
+          )
+            .catch((cause: unknown) => setError(projectToolErrorMessage(cause)))
+            .finally(() => setPending(false));
+        }}
+      >
+        <fieldset disabled={disabled} className="space-y-2">
+          <legend className="text-sm font-medium">Full app access</legend>
+          <p className="text-sm text-muted-foreground">
+            Full access includes every action in this app, including actions that can change data.
+          </p>
+          <RadioGroup
+            aria-label="Full app access"
+            value={audience}
+            disabled={disabled}
+            onValueChange={(value) => {
+              if (value === "all" || value === "selected" || value === "none") setAudience(value);
+            }}
+          >
+            <label className="flex items-center gap-2 text-sm">
+              <Radio value="none" aria-label="No full access" /> No full access
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Radio value="all" aria-label="All bots in this project" /> All bots in this project
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Radio value="selected" aria-label="Selected bots" /> Selected bots
+            </label>
+          </RadioGroup>
+          {audience === "selected" ? (
+            <BotSelection
+              bots={bots}
+              selected={selected}
+              disabled={disabled}
+              onChange={setSelected}
+              describe={(id) => {
+                if (selected.includes(id)) return "Full access";
+                const count = assignments.filter(
+                  ({ audience }) => audience.kind === "all" || audience.botIds.includes(id),
+                ).length;
+                return count === 0 ? "No access" : count === 1 ? "1 action" : `${count} actions`;
+              }}
+            />
+          ) : null}
+        </fieldset>
+        {error ? <InlineError>{error}</InlineError> : null}
+        <div className="flex justify-end">
+          <Button type="submit" disabled={!canSave}>
+            {pending ? "Saving…" : "Save app access"}
+          </Button>
+        </div>
+      </form>
+      <details>
+        <summary className="cursor-pointer text-sm font-medium">Individual actions</summary>
+        <div className="mt-2 space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Give a bot access to specific actions in {app}, or set fixed inputs.
+          </p>
+          <Button type="button" size="sm" variant="outline" onClick={onBrowseActions}>
+            Browse individual actions
+          </Button>
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -371,26 +554,12 @@ function GrantForm({
           </label>
         </RadioGroup>
         {audience === "selected" ? (
-          <div className="space-y-2 pl-6">
-            {bots.length === 0 ? (
-              <p className="text-sm text-muted-foreground">This project has no bots yet.</p>
-            ) : null}
-            {bots.map((bot) => (
-              <label key={bot.id} className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={selected.includes(bot.id)}
-                  aria-label={bot.name}
-                  disabled={!canWrite || pending}
-                  onCheckedChange={(checked) => {
-                    setSelected((ids) =>
-                      checked ? [...ids, bot.id] : ids.filter((id) => id !== bot.id),
-                    );
-                  }}
-                />
-                <span>{bot.name}</span>
-              </label>
-            ))}
-          </div>
+          <BotSelection
+            bots={bots}
+            selected={selected}
+            disabled={!canWrite || pending}
+            onChange={setSelected}
+          />
         ) : null}
       </fieldset>
       {fields.length > 0 || fixed ? (

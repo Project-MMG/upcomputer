@@ -1,6 +1,7 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   ProjectToolQuery,
+  ProjectToolCursor,
   ProjectToolSlug,
   type ProjectToolError,
 } from "@t3tools/tasks-contracts/v1";
@@ -27,10 +28,12 @@ const parameters = Schema.Struct({ slug: ProjectToolSlug, arguments: Schema.Json
 const toolkit = Toolkit.make(
   Tool.make("project_tools_search", {
     description:
-      "Find app actions assigned to the calling bot in its current project. Results include access type, input schemas, and names of inputs the project supplies. Follow nextOffset to see more.",
+      "Find actions assigned to this bot in its current project. Results include input schemas, read or write access, and names of fixed inputs. Search an app by its slug from the apps list to find its actions. Use nextOffset for individual assignments or nextCursor for a full app's next page.",
     parameters: Schema.Struct({
       query: Schema.optional(ProjectToolQuery),
       offset: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      app: Schema.optional(ProjectToolSlug),
+      cursor: Schema.optional(ProjectToolCursor),
     }),
     success: McpSchema.CallToolResult,
     failure: OrchestratorMcpFailure,

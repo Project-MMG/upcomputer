@@ -182,6 +182,7 @@ describe("command permissions", () => {
     { method: WS_METHODS.serverRunStorageCleanup, scope: AuthSettingsWriteScope },
     { method: WS_METHODS.serverReclaimDatabaseSpace, scope: AuthEnvironmentMaintainScope },
     { method: "upcomputer.project-tools.v1.connection", scope: AuthSettingsWriteScope },
+    { method: "upcomputer.project-tools.v1.appGrant", scope: AuthSettingsWriteScope },
     { method: "upcomputer.project-tools.v1.grant", scope: AuthSettingsWriteScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.gen(function* () {

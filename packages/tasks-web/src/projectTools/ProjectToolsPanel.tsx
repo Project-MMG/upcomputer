@@ -30,7 +30,7 @@ import {
   accountLabel,
   actionAccessLabel,
   InlineError,
-  ProjectToolAccountDialog,
+  ProjectToolAppDialog,
   ProjectToolActionDialog,
 } from "./ProjectToolDetails.tsx";
 import { projectToolErrorMessage, useRemoteData } from "./remoteData.ts";
@@ -48,6 +48,10 @@ const assignmentStatus: Record<ProjectToolAssignment["status"], string> = {
 type Detail =
   | { readonly kind: "action"; readonly slug: string }
   | { readonly kind: "app"; readonly slug: string; readonly backTo?: string };
+type CatalogView = {
+  readonly kind: "apps" | "actions";
+  readonly app?: ProjectToolApp;
+};
 
 export default function ProjectToolsPanel({
   members,
@@ -94,14 +98,21 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
     [member.environmentId, member.id],
   );
   const canGrant = useExperimentalFeatureRpcPermission(member.environmentId, M.grant);
+  const canGrantApp = useExperimentalFeatureRpcPermission(member.environmentId, M.appGrant);
   const canConnect = useExperimentalFeatureRpcPermission(member.environmentId, M.connection);
   const { data: settings, error, loading, refresh } = useRemoteData(api.settings);
   const [detail, setDetail] = useState<Detail>();
+  const [catalog, setCatalog] = useState<CatalogView>({ kind: "apps" });
   const [removing, setRemoving] = useState<string>();
   const [mutationError, setMutationError] = useState<string>();
   const showAction = (slug: string) => setDetail({ kind: "action", slug });
   const showApp = (slug: string) => setDetail({ kind: "app", slug });
   const close = () => setDetail(undefined);
+  const configuredApps = new Set([
+    ...(settings?.accounts ?? []).map(({ app }) => app),
+    ...(settings?.appGrants ?? []).map(({ app }) => app.slug),
+    ...(settings?.assignments ?? []).map(({ action }) => action.app),
+  ]);
 
   const revoke = async (slug: string) => {
     if (removing || !canGrant) return;
@@ -121,7 +132,7 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
     <>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-prose text-sm text-muted-foreground">
-          Connect apps and choose which bots in this project can use each action.
+          Connect apps and choose which bots in this project can use them.
         </p>
         <Button size="sm" variant="outline" disabled={loading} onClick={refresh}>
           Refresh
@@ -141,20 +152,45 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
       ) : null}
       {settings ? (
         <>
-          {settings.accounts.length > 0 ? (
-            <SettingsSection title="App connections" icon={<PlugIcon className="size-4" />}>
-              {settings.accounts.map((entry) => {
-                const actions = settings.assignments.filter(
-                  ({ action }) => action.app === entry.app && action.requiresAccount,
-                );
+          {configuredApps.size > 0 ? (
+            <SettingsSection title="Project apps" icon={<PlugIcon className="size-4" />}>
+              {Array.from(configuredApps, (app) => {
+                const entry = settings.accounts.find((account) => account.app === app);
+                const grant = settings.appGrants?.find(({ app: granted }) => granted.slug === app);
+                const actions = settings.assignments.filter(({ action }) => action.app === app);
+                const needsAccount =
+                  entry ||
+                  grant?.app.setup === "connect" ||
+                  actions.some(({ action }) => action.requiresAccount);
+                const audience = grant?.audience;
+                const fullCount =
+                  audience?.kind === "selected"
+                    ? settings.bots.filter(({ id }) => audience.botIds.includes(id)).length
+                    : 0;
                 return (
                   <SettingsRow
-                    key={entry.app}
-                    title={actions[0]?.action.appName ?? entry.app}
-                    description={accountLabel(entry)}
+                    key={app}
+                    title={grant?.app.name ?? actions[0]?.action.appName ?? app}
+                    description={
+                      <>
+                        {needsAccount ? <span className="block">{accountLabel(entry)}</span> : null}
+                        {settings.appGrants ? (
+                          <span className="block">
+                            {audience?.kind === "all"
+                              ? "Full access for all bots"
+                              : fullCount > 0
+                                ? `Full access for ${fullCount} ${fullCount === 1 ? "bot" : "bots"}`
+                                : "Full access off"}
+                            {actions.length > 0
+                              ? ` · ${actions.length} individual ${actions.length === 1 ? "action" : "actions"}`
+                              : ""}
+                          </span>
+                        ) : null}
+                      </>
+                    }
                     control={
-                      <Button size="sm" variant="outline" onClick={() => showApp(entry.app)}>
-                        Manage account
+                      <Button size="sm" variant="outline" onClick={() => showApp(app)}>
+                        {settings.appGrants ? "Manage access" : "Manage account"}
                       </Button>
                     }
                   />
@@ -162,13 +198,9 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
               })}
             </SettingsSection>
           ) : null}
-          <SettingsSection title="Assigned actions">
-            {settings.assignments.length === 0 ? (
-              <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
-                Choose an action from the catalog to grant access.
-              </p>
-            ) : (
-              settings.assignments.map(({ action, audience, status }) => {
+          {settings.assignments.length > 0 ? (
+            <SettingsSection title="Assigned actions">
+              {settings.assignments.map(({ action, audience, status }) => {
                 const matching =
                   audience.kind === "selected"
                     ? settings.bots.filter(({ id }) => audience.botIds.includes(id))
@@ -205,22 +237,35 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
                     }
                   />
                 );
-              })
-            )}
-          </SettingsSection>
+              })}
+            </SettingsSection>
+          ) : null}
           {settings.configured ? (
-            <Catalog api={api} settings={settings} showAction={showAction} showApp={showApp} />
+            <Catalog
+              key={JSON.stringify([catalog.kind, catalog.app?.slug])}
+              api={api}
+              view={catalog}
+              onViewChange={setCatalog}
+              settings={settings}
+              showAction={showAction}
+              showApp={showApp}
+            />
           ) : null}
           {detail?.kind === "app" ? (
-            <ProjectToolAccountDialog
+            <ProjectToolAppDialog
               key={detail.slug}
               app={detail.slug}
               api={api}
               settings={settings}
               canWrite={canConnect}
+              canGrantApp={canGrantApp}
               onChange={refresh}
               onClose={close}
               onBack={detail.backTo ? () => showAction(detail.backTo!) : undefined}
+              onBrowseActions={(app) => {
+                setCatalog({ kind: "actions", app });
+                close();
+              }}
             />
           ) : null}
           {detail?.kind === "action" ? (
@@ -246,17 +291,20 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
 
 function Catalog({
   api,
+  view,
+  onViewChange,
   settings,
   showAction,
   showApp,
 }: {
   readonly api: ProjectToolsApi;
+  readonly view: CatalogView;
+  readonly onViewChange: (view: CatalogView) => void;
   readonly settings: ProjectToolSettings;
   readonly showAction: (slug: string) => void;
   readonly showApp: (slug: string) => void;
 }) {
-  const [kind, setKind] = useState<"apps" | "actions">("actions");
-  const [app, setApp] = useState<ProjectToolApp>();
+  const { kind, app } = view;
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const fetchPage = useCallback(
@@ -276,11 +324,11 @@ function Catalog({
           aria-label="Browse catalog"
           value={[kind]}
           onValueChange={([value]) => {
-            if (value === "apps" || value === "actions") setKind(value);
+            if (value === "apps" || value === "actions") onViewChange({ kind: value });
           }}
         >
-          <Toggle value="actions">Actions</Toggle>
           <Toggle value="apps">Apps</Toggle>
+          <Toggle value="actions">Actions</Toggle>
         </ToggleGroup>
       }
     >
@@ -315,7 +363,7 @@ function Catalog({
         {kind === "actions" && app ? (
           <div className="flex items-center gap-2">
             <Badge variant="outline">{app.name}</Badge>
-            <Button size="xs" variant="ghost" onClick={() => setApp(undefined)}>
+            <Button size="xs" variant="ghost" onClick={() => onViewChange({ kind: "actions" })}>
               Clear app filter
             </Button>
           </div>
@@ -364,17 +412,12 @@ function Catalog({
                 control={
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => showApp(item.slug)}>
-                      Account setup
+                      {settings.appGrants ? "Manage access" : "Account setup"}
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => {
-                        setApp(item);
-                        setKind("actions");
-                        setDraft("");
-                        setQuery("");
-                      }}
+                      onClick={() => onViewChange({ kind: "actions", app: item })}
                     >
                       Browse actions
                     </Button>

@@ -552,6 +552,85 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect("gives three bots full access, no access, and one action for the same app", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const { backend, enableComposio, authenticate, shells } = yield* Fixture;
+    enableComposio();
+    const full = yield* addBot("Full access", firstProject);
+    const none = yield* addBot("No access", firstProject);
+    const limited = yield* addBot("One action", firstProject);
+    const fullApi = yield* authenticate(full.threadId);
+    const noneApi = yield* authenticate(none.threadId);
+    const limitedApi = yield* authenticate(limited.threadId);
+    const app = { projectId: firstProject, app: "fixture" };
+    yield* tools.connection({ ...app, operation: "start" });
+    const account = Array.from(backend.accounts.values())[0]!;
+    account.status = "ACTIVE";
+    yield* tools.connection({ ...app, operation: "finish" });
+    yield* tools.grant({
+      projectId: firstProject,
+      slug: read,
+      audience: { kind: "selected", botIds: [full.agent.id, limited.agent.id] },
+      fixedInputs: { repository: "org/allowed" },
+    });
+    yield* tools.grantApp({
+      ...app,
+      audience: { kind: "selected", botIds: [full.agent.id] },
+    });
+
+    expect(content(yield* fullApi.search())).toMatchObject({
+      apps: [expect.objectContaining({ slug: "fixture" })],
+    });
+    expect(content(yield* fullApi.search({ app: "fixture" }))).toMatchObject({
+      actions: [expect.objectContaining({ slug: read, fixedInputs: ["repository"] })],
+      nextCursor: "second",
+    });
+    expect(content(yield* fullApi.search({ app: "fixture", cursor: "second" }))).toMatchObject({
+      actions: [expect.objectContaining({ slug: write, fixedInputs: [] })],
+    });
+    expect(content(yield* limitedApi.search({ app: "fixture" }))).toEqual({
+      actions: [expect.objectContaining({ slug: read })],
+      nextOffset: null,
+    });
+    expect(content(yield* noneApi.search())).toEqual({ actions: [], nextOffset: null });
+    expect(code(yield* noneApi.read(read))).toBe("not-assigned");
+    expect(code(yield* limitedApi.write(write))).toBe("not-assigned");
+    expect(code(yield* fullApi.read(publicRead))).toBe("not-assigned");
+    expect(content(yield* fullApi.read(read, { repository: "org/override" }))).toMatchObject({
+      arguments: { repository: "org/allowed" },
+    });
+    expect(
+      content(yield* fullApi.write(write, { repository: "org/allowed", note: "fixture" })),
+    ).toMatchObject({ slug: write });
+    expect(backend.calls.at(-1)?.account).toBe(account.id);
+
+    const shell = shells.get(full.threadId)!;
+    shells.set(full.threadId, { ...shell, interactionMode: "plan" });
+    expect(code(yield* fullApi.write(write))).toBe("plan-mode");
+    expect(content(yield* fullApi.search({ app: "fixture", cursor: "second" }))).toMatchObject({
+      actions: [],
+    });
+    shells.set(full.threadId, shell);
+    const gate = yield* backend.holdSession;
+    const inFlight = yield* fullApi
+      .write(write, { repository: "org/allowed", note: "revoked" })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(gate.entered);
+    yield* tools.grantApp({ ...app, audience: null });
+    yield* Deferred.succeed(gate.proceed, undefined);
+    expect(code(yield* Fiber.join(inFlight))).toBe("not-assigned");
+    expect(content(yield* limitedApi.read(read))).toMatchObject({ slug: read });
+
+    yield* tools.grantApp({ ...app, audience: all });
+    const newBot = yield* addBot("New full access", firstProject);
+    const newApi = yield* authenticate(newBot.threadId);
+    expect(content(yield* newApi.search())).toMatchObject({
+      apps: [expect.objectContaining({ slug: "fixture" })],
+    });
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("applies bot grants to an own background run and a schedule bound to its chat", () =>
   Effect.gen(function* () {
     const tools = yield* ProjectTools.ProjectTools;

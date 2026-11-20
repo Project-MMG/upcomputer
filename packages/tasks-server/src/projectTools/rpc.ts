@@ -32,6 +32,7 @@ export const PROJECT_TOOLS_RPC_CONTRIBUTION = defineNamespacedRpcContribution({
     [M.actions]: AuthOrchestrationReadScope,
     [M.action]: AuthOrchestrationReadScope,
     [M.connection]: AuthSettingsWriteScope,
+    [M.appGrant]: AuthSettingsWriteScope,
     [M.grant]: AuthSettingsWriteScope,
   },
   handlers: () =>
@@ -45,6 +46,7 @@ export const PROJECT_TOOLS_RPC_CONTRIBUTION = defineNamespacedRpcContribution({
           [M.actions]: (input) => response(tools.actions(input)),
           [M.action]: ({ projectId, slug }) => response(tools.action(projectId, slug)),
           [M.connection]: (input) => response(tools.connection(input)),
+          [M.appGrant]: (input) => response(tools.grantApp(input)),
           [M.grant]: (input) => response(tools.grant(input)),
         });
       }),

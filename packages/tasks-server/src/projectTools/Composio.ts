@@ -144,6 +144,7 @@ interface Page<A> {
 interface CatalogInput {
   readonly query?: string | undefined;
   readonly cursor?: string | undefined;
+  readonly limit?: number;
 }
 
 interface Account {
@@ -269,7 +270,10 @@ const make = Effect.gen(function* () {
     return { items: page.items, nextCursor: page.next_cursor || null };
   });
   const catalogQuery = (input: CatalogInput, queryParam: "search" | "query") => {
-    const params = new URLSearchParams({ limit: String(pageSize), include_deprecated: "false" });
+    const params = new URLSearchParams({
+      limit: String(input.limit ?? pageSize),
+      include_deprecated: "false",
+    });
     if (input.query?.trim()) params.set(queryParam, input.query.trim());
     if (input.cursor) params.set("cursor", input.cursor);
     return params;
@@ -393,7 +397,7 @@ const make = Effect.gen(function* () {
       );
       const allowed = new Set(slugs);
       return page.items
-        .filter(({ slug }) => allowed.has(slug))
+        .filter(({ slug, is_deprecated }) => allowed.has(slug) && is_deprecated !== true)
         .map((tool) => ({
           ...toAction(tool),
           inputSchema: inputSchema(tool.input_parameters),

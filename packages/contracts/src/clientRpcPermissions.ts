@@ -94,6 +94,7 @@ const CLIENT_GUARDED_FEATURE_RPC_SCOPES = {
   "upcomputer.bots.v1.assign": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.extract": AuthOrchestrationOperateScope,
   "upcomputer.project-tools.v1.connection": AuthSettingsWriteScope,
+  "upcomputer.project-tools.v1.appGrant": AuthSettingsWriteScope,
   "upcomputer.project-tools.v1.grant": AuthSettingsWriteScope,
   "upcomputer.user-surveys.v1.report": AuthOrchestrationOperateScope,
 } as const;

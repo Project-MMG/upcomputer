@@ -3,6 +3,7 @@ import {
   PROJECT_TOOLS_RPC_METHODS as M,
   ProjectToolsRpcGroup,
   type ProjectToolActionsInput,
+  type ProjectToolAppGrantInput,
   type ProjectToolConnectionInput,
   type ProjectToolGrantInput,
 } from "@t3tools/tasks-contracts/v1";
@@ -38,6 +39,13 @@ export function projectToolsApi(environmentId: EnvironmentId, projectId: Project
     grant: (input: Omit<ProjectToolGrantInput, "projectId">) => {
       const payload = { ...input, projectId };
       return request((client) => client[M.grant](payload), { method: M.grant, input: payload });
+    },
+    grantApp: (input: Omit<ProjectToolAppGrantInput, "projectId">) => {
+      const payload = { ...input, projectId };
+      return request((client) => client[M.appGrant](payload), {
+        method: M.appGrant,
+        input: payload,
+      });
     },
   };
 }

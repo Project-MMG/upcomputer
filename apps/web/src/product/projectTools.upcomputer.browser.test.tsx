@@ -5,6 +5,8 @@ import {
   TaskAgentId,
   type ProjectToolActionsInput,
   type ProjectToolActionDetails,
+  type ProjectToolAppGrant,
+  type ProjectToolAppGrantInput,
   type ProjectToolAssignment,
   type ProjectToolConnectionInput,
   type ProjectToolGrantInput,
@@ -68,13 +70,21 @@ function setup() {
   const bots = [
     { id: TaskAgentId.make("scout"), name: "Scout" },
     { id: TaskAgentId.make("writer"), name: "Writer" },
+    { id: TaskAgentId.make("idle"), name: "Idle" },
   ];
+  const appDetails = {
+    slug: "notes",
+    name: "Fixture Notes",
+    description: "Repository notes.",
+    setup: "connect",
+  } as const;
   const account = "Notes sandbox account";
   const link = "https://connect.composio.dev/link/notes-fixture";
   let connected = false;
   let pending = false;
   let signedIn = false;
   let assignment: ProjectToolAssignment | undefined;
+  let appGrant: ProjectToolAppGrant | undefined;
   state.open.mockReset().mockImplementation(async (url) => {
     expect(url).toBe(link);
     signedIn = true;
@@ -97,9 +107,10 @@ function setup() {
             : [],
         bots,
         assignments: assignment ? [assignment] : [],
+        appGrants: appGrant ? [appGrant] : [],
       }),
       apps: async () => ({
-        items: [{ slug: "notes", name: "Fixture Notes", description: "Repository notes." }],
+        items: [appDetails],
         nextCursor: null,
       }),
       actions: async ({
@@ -111,12 +122,7 @@ function setup() {
             ? { items: [write], nextCursor: null }
             : { items: [read], nextCursor: "next" }
           : { items: [read, write], nextCursor: null },
-      app: async () => ({
-        slug: "notes",
-        name: "Fixture Notes",
-        description: "",
-        setup: "connect",
-      }),
+      app: async () => appDetails,
       action: async (slug: string) => (slug === write.slug ? write : read),
       connection: async ({ app, operation }: Omit<ProjectToolConnectionInput, "projectId">) => {
         expect(app).toBe("notes");
@@ -151,11 +157,24 @@ function setup() {
           };
         }
       },
+      grantApp: async ({ app, audience }: Omit<ProjectToolAppGrantInput, "projectId">) => {
+        expect(app).toBe(appDetails.slug);
+        expect(connected).toBe(true);
+        if (audience?.kind === "selected") {
+          expect(audience.botIds).toEqual([bots[1]!.id]);
+          appGrant = {
+            app: appDetails,
+            audience: { kind: "selected", botIds: [bots[1]!.id] },
+          };
+        } else {
+          appGrant = audience ? { app: appDetails, audience } : undefined;
+        }
+      },
     };
   });
 }
 
-it("pages catalog results, links an account, and changes and revokes an action audience in Project Settings", async () => {
+it("manages full app access, no access, and individual actions from Project Settings", async () => {
   setup();
   await using screen = await render(
     <ProjectSettingsTabs members={[member]}>
@@ -163,20 +182,22 @@ it("pages catalog results, links an account, and changes and revokes an action a
     </ProjectSettingsTabs>,
   );
   await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
+  await expect.element(screen.getByRole("searchbox", { name: "Search apps" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Manage access" }));
+  const dialog = page.getByRole("dialog");
+  await userEvent.click(dialog.getByRole("button", { name: "Connect", exact: true }));
+  await userEvent.click(dialog.getByRole("button", { name: "Open Composio sign-in" }));
+  await userEvent.click(dialog.getByRole("button", { name: "Check connection" }));
+  await expect.element(dialog.getByText("Notes sandbox account", { exact: true })).toBeVisible();
+  await userEvent.click(dialog.getByText("Individual actions", { exact: true }));
+  await userEvent.click(dialog.getByRole("button", { name: "Browse individual actions" }));
+
   await userEvent.fill(screen.getByRole("searchbox", { name: "Search actions" }), "repository");
   await userEvent.click(screen.getByRole("button", { name: "Search", exact: true }));
   await expect.element(screen.getByText("Read notes", { exact: true })).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Load more" }));
   await expect.element(screen.getByText("Write note", { exact: true })).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Configure" }).last());
-
-  const dialog = page.getByRole("dialog");
-  await userEvent.click(dialog.getByRole("button", { name: "Manage account" }));
-  await userEvent.click(dialog.getByRole("button", { name: "Connect", exact: true }));
-  await userEvent.click(dialog.getByRole("button", { name: "Open Composio sign-in" }));
-  await userEvent.click(dialog.getByRole("button", { name: "Check connection" }));
-  await expect.element(dialog.getByText("Notes sandbox account", { exact: true })).toBeVisible();
-  await userEvent.click(dialog.getByRole("button", { name: "Back to action" }));
 
   await expect
     .element(dialog.getByRole("radio", { name: "All bots in this project" }))
@@ -194,8 +215,18 @@ it("pages catalog results, links an account, and changes and revokes an action a
   await userEvent.click(dialog.getByRole("checkbox", { name: "Scout" }));
   await userEvent.click(dialog.getByRole("button", { name: "Save assignment" }));
   await expect.element(screen.getByText("Scout", { exact: true })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Turn off", exact: true }));
+
+  await userEvent.click(screen.getByRole("button", { name: "Manage access", exact: true }));
+  await userEvent.click(dialog.getByRole("radio", { name: "Selected bots" }));
+  await userEvent.click(dialog.getByRole("checkbox", { name: "Writer" }));
+  await expect.element(dialog.getByText("Full access", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("1 action", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("No access", { exact: true })).toBeVisible();
+  await userEvent.click(dialog.getByRole("button", { name: "Save app access" }));
   await expect
-    .element(screen.getByText("Choose an action from the catalog to grant access."))
+    .element(screen.getByText("Full access for 1 bot · 1 individual action"))
     .toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Turn off", exact: true }));
+  await expect.element(screen.getByText("Full access for 1 bot", { exact: true })).toBeVisible();
 });

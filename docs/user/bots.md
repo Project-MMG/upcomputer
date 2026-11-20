@@ -80,20 +80,20 @@ comes back in its result, and the bot decides in its own chat what to remember.
 ## Project tools
 
 Open **Settings → Projects**, select the project, then open **Tools**. If the project
-groups several checkouts, select the one whose bots you want to configure. Browse or
-search the Composio apps and actions, and connect the account the project will use.
-Composio shows the sign-in page. Return to Tools and select **Check connection** after
-signing in.
+groups several checkouts, select the one whose bots you want to configure. Find an app
+in the Composio catalog and open **Manage access**. If it needs an account, connect it
+in Composio, then return to Tools and select **Check connection**.
 
-Open an action and choose **All bots in this project** or **Selected bots**. The
-action's details show whether it can write and whether it requires an account. You can
-set fixed input values, such as the repository the bot should use. The same assignment
-applies in the bot's chat, its own background task runs, and schedules bound to its chat.
-Plan mode allows read actions only.
+Choose **All bots in this project** or **Selected bots** to give those bots every
+action in the app. For narrower access, open **Individual actions** and configure only
+the actions that bot should use. You can set fixed input values, such as the repository
+the bot should use. Fixed inputs still apply when a bot also has full app access.
 
-Turn off an action to remove the assignment. Disconnecting an app stops its
-account-dependent actions. Their assignments stay visible so you can reconnect or
-turn them off. Some apps require an auth config in the Composio dashboard first.
+Access applies in the bot's chat, its background runs, and schedules bound to its chat.
+Plan mode allows read actions only. Select **No full access** to remove the app-wide
+grant. Use **Assigned actions** to turn off individual assignments. Disconnecting an
+app stops its account-dependent actions, and its assignments stay visible. Some apps
+require an auth config in the Composio dashboard first.
 
 The environment owner sets up Composio by saving a project API key as plain text in
 `secrets/composio-api-key.bin` under the server's state directory. On a standard

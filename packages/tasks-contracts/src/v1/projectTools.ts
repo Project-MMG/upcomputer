@@ -9,7 +9,7 @@ export const ProjectToolSlug = Schema.String.check(
   Schema.isPattern(/^[a-z0-9][a-z0-9_.-]{0,199}$/i),
 );
 export const ProjectToolQuery = Schema.String.check(Schema.isMaxLength(200));
-const cursor = Schema.String.check(Schema.isMaxLength(1000));
+export const ProjectToolCursor = Schema.String.check(Schema.isMaxLength(1000));
 
 export const ProjectToolAction = Schema.Struct({
   slug: ProjectToolSlug,
@@ -45,6 +45,13 @@ export const ProjectToolAudience = Schema.Union([
   AllBots,
   Schema.Struct({ kind: Schema.Literal("selected"), botIds: Schema.NonEmptyArray(TaskAgentId) }),
 ]);
+export type ProjectToolAudience = typeof ProjectToolAudience.Type;
+
+export const ProjectToolAppGrant = Schema.Struct({
+  app: ProjectToolAppDetails,
+  audience: ProjectToolAudience,
+});
+export type ProjectToolAppGrant = typeof ProjectToolAppGrant.Type;
 
 export const ProjectToolGrant = Schema.Struct({
   action: ProjectToolAction,
@@ -82,6 +89,7 @@ export const ProjectToolSettings = Schema.Struct({
   configured: Schema.Boolean,
   accounts: Schema.Array(ProjectToolAccount),
   assignments: Schema.Array(ProjectToolAssignment),
+  appGrants: Schema.optionalKey(Schema.Array(ProjectToolAppGrant)),
   bots: Schema.Array(Schema.Struct({ id: TaskAgentId, name: Schema.String })),
 });
 export type ProjectToolSettings = typeof ProjectToolSettings.Type;
@@ -90,7 +98,7 @@ const project = { projectId: ProjectId };
 const page = {
   ...project,
   query: Schema.optional(ProjectToolQuery),
-  cursor: Schema.optional(cursor),
+  cursor: Schema.optional(ProjectToolCursor),
 };
 export const ProjectToolAppsInput = Schema.Struct(page);
 export const ProjectToolActionsInput = Schema.Struct({
@@ -104,18 +112,27 @@ export const ProjectToolConnectionInput = Schema.Struct({
 });
 export type ProjectToolConnectionInput = typeof ProjectToolConnectionInput.Type;
 
+const requestedAudience = Schema.NullOr(
+  Schema.Union([
+    AllBots,
+    Schema.Struct({ kind: Schema.Literal("selected"), botIds: Schema.Array(TaskAgentId) }),
+  ]),
+);
+
 export const ProjectToolGrantInput = Schema.Struct({
   ...project,
   slug: ProjectToolSlug,
-  audience: Schema.NullOr(
-    Schema.Union([
-      AllBots,
-      Schema.Struct({ kind: Schema.Literal("selected"), botIds: Schema.Array(TaskAgentId) }),
-    ]),
-  ),
+  audience: requestedAudience,
   fixedInputs: Schema.JsonObject,
 });
 export type ProjectToolGrantInput = typeof ProjectToolGrantInput.Type;
+
+export const ProjectToolAppGrantInput = Schema.Struct({
+  ...project,
+  app: ProjectToolSlug,
+  audience: requestedAudience,
+});
+export type ProjectToolAppGrantInput = typeof ProjectToolAppGrantInput.Type;
 
 const messages = {
   "missing-key": "Set up a Composio API key on this environment to use project tools.",
@@ -168,6 +185,7 @@ export const PROJECT_TOOLS_RPC_METHODS = {
   actions: `${PROJECT_TOOLS_RPC_NAMESPACE}.actions`,
   action: `${PROJECT_TOOLS_RPC_NAMESPACE}.action`,
   connection: `${PROJECT_TOOLS_RPC_NAMESPACE}.connection`,
+  appGrant: `${PROJECT_TOOLS_RPC_NAMESPACE}.appGrant`,
   grant: `${PROJECT_TOOLS_RPC_NAMESPACE}.grant`,
 } as const;
 
@@ -182,7 +200,7 @@ export const ProjectToolsRpcGroup = RpcGroup.make(
     payload: ProjectToolAppsInput,
     success: Schema.Struct({
       items: Schema.Array(ProjectToolApp),
-      nextCursor: Schema.NullOr(cursor),
+      nextCursor: Schema.NullOr(ProjectToolCursor),
     }),
     error: ProjectToolError,
   }),
@@ -195,7 +213,7 @@ export const ProjectToolsRpcGroup = RpcGroup.make(
     payload: ProjectToolActionsInput,
     success: Schema.Struct({
       items: Schema.Array(ProjectToolAction),
-      nextCursor: Schema.NullOr(cursor),
+      nextCursor: Schema.NullOr(ProjectToolCursor),
     }),
     error: ProjectToolError,
   }),
@@ -211,6 +229,10 @@ export const ProjectToolsRpcGroup = RpcGroup.make(
   }),
   Rpc.make(M.grant, {
     payload: ProjectToolGrantInput,
+    error: ProjectToolError,
+  }),
+  Rpc.make(M.appGrant, {
+    payload: ProjectToolAppGrantInput,
     error: ProjectToolError,
   }),
 );

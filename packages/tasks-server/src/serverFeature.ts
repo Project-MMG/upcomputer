@@ -29,6 +29,10 @@ import { TaskFeatureCountsLive } from "./telemetry/featureCounts.ts";
 import * as Bots from "./bots/BotService.ts";
 import { BotContextLive, BOTS_RPC_CONTRIBUTION } from "./bots/contributions.ts";
 import { BotMcpToolsLive } from "./bots/BotMcpTools.ts";
+import * as Composio from "./projectTools/Composio.ts";
+import * as ProjectTools from "./projectTools/ProjectTools.ts";
+import * as ProjectToolMcp from "./projectTools/ProjectToolMcp.ts";
+import { PROJECT_TOOLS_RPC_CONTRIBUTION } from "./projectTools/rpc.ts";
 
 const TASKS_FEATURE_ID = "upcomputer.tasks";
 
@@ -77,6 +81,7 @@ export const TASKS_SERVER_FEATURE = defineExperimentalServerFeature({
           TaskChatToolHintsLive,
           BotContextLive,
           TaskFeatureCountsLive,
+          ProjectTools.layer.pipe(Layer.provide(Composio.layer)),
         ).pipe(Layer.provideMerge(TaskServicesLive)),
       ),
     },
@@ -86,8 +91,10 @@ export const TASKS_SERVER_FEATURE = defineExperimentalServerFeature({
       id: "task-tools",
       ownerId: TASKS_FEATURE_ID,
       version: 1,
-      layer: eraseExperimentalServerLayer(Layer.merge(TaskMcpToolsLive, BotMcpToolsLive)),
+      layer: eraseExperimentalServerLayer(
+        Layer.mergeAll(TaskMcpToolsLive, BotMcpToolsLive, ProjectToolMcp.layer),
+      ),
     },
   ],
-  rpc: [...TASK_RPC_CONTRIBUTIONS, BOTS_RPC_CONTRIBUTION],
+  rpc: [...TASK_RPC_CONTRIBUTIONS, BOTS_RPC_CONTRIBUTION, PROJECT_TOOLS_RPC_CONTRIBUTION],
 });

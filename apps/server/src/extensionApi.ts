@@ -19,6 +19,7 @@ export * as McpToolAccess from "./mcp/McpToolAccess.ts";
 export { resultToolkitRegistration } from "./mcp/McpHttpServer.ts";
 export { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 export { ServerEnvironment } from "./environment/ServerEnvironment.ts";
+export { ServerSecretStore } from "./auth/ServerSecretStore.ts";
 export { ProjectStoreV2 } from "./orchestration-v2/ProjectStore.ts";
 export {
   isActiveRun,

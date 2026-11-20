@@ -77,6 +77,29 @@ and the bot replies when the work finishes. See
 Background tasks can read untrusted pages and files, so they can't save memory. What a task found
 comes back in its result, and the bot decides in its own chat what to remember.
 
+## Project tools
+
+Open **Settings → Projects**, select the project, then open **Tools**. If the project
+groups several checkouts, select the one whose bots you want to configure. Browse or
+search the Composio apps and actions, and connect the account the project will use.
+Composio shows the sign-in page. Return to Tools and select **Check connection** after
+signing in.
+
+Open an action and choose **All bots in this project** or **Selected bots**. The
+action's details show whether it can write and whether it requires an account. You can
+set fixed input values, such as the repository the bot should use. The same assignment
+applies in the bot's chat, its own background task runs, and schedules bound to its chat.
+Plan mode allows read actions only.
+
+Turn off an action to remove the assignment. Disconnecting an app stops its
+account-dependent actions. Their assignments stay visible so you can reconnect or
+turn them off. Some apps require an auth config in the Composio dashboard first.
+
+The environment owner sets up Composio by saving a project API key as plain text in
+`secrets/composio-api-key.bin` under the server's state directory. On a standard
+installation, that directory is `~/.upcomputer/userdata`. Restrict the file to the
+server user, then refresh Tools.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

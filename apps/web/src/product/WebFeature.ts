@@ -3,6 +3,7 @@ import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import type { NavigateOptions } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
+import type { SidebarProjectGroupMember } from "../sidebarProjectGrouping";
 
 const STABLE_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 const ROUTE_PATH = /^\/[a-z0-9][a-z0-9._-]*$/;
@@ -122,6 +123,7 @@ export interface ExperimentalWebFeatureContribution {
   readonly routes?: ReadonlyArray<ExperimentalWebRouteContribution>;
   readonly navigation?: ReadonlyArray<ExperimentalWebNavigationContribution>;
   readonly settings?: ReadonlyArray<ExperimentalWebSettingsPageContribution>;
+  readonly projectTools?: ComponentType<{ readonly members: readonly SidebarProjectGroupMember[] }>;
   /** Replaces a sidebar thread row's timestamp. */
   readonly threadRowAccessory?: ComponentType<ExperimentalWebThreadRowAccessoryProps>;
   /** Follows the open thread's title in the chat header. */

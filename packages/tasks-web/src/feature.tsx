@@ -11,6 +11,9 @@ import {
   type ExperimentalWebThreadRowAccessoryProps,
 } from "../../../apps/web/src/product/WebFeature.ts";
 import { TasksWebRpcGroup } from "./rpc/tasksRpcGroup.ts";
+import { ProjectToolsRpcGroup } from "@t3tools/tasks-contracts/v1";
+
+const LazyProjectTools = lazy(() => import("./projectTools/ProjectToolsPanel.tsx"));
 
 const LazyNavigationRunCounts = lazy(() =>
   import("./ui/TaskNavigationRunCounts.tsx").then((module) => ({
@@ -105,7 +108,12 @@ function ChatHeaderRunCounts(props: ExperimentalWebThreadAccessoryProps) {
 export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
   id: "upcomputer.tasks.web",
   version: 1,
-  rpcGroups: [TasksWebRpcGroup],
+  rpcGroups: [TasksWebRpcGroup, ProjectToolsRpcGroup],
+  projectTools: (props) => (
+    <Suspense fallback={null}>
+      <LazyProjectTools {...props} />
+    </Suspense>
+  ),
   threadRowAccessory: ThreadRowRunCounts,
   chatHeaderAccessory: ChatHeaderRunCounts,
   threadActions: (thread) => botMenu?.botThreadActions(thread) ?? [],

@@ -39,12 +39,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import {
-  SettingResetButton,
-  SettingsPageContainer,
-  SettingsRow,
-  SettingsSection,
-} from "./settingsLayout";
+import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import {
   canPickExternalProjectFavicon,
   ProjectFaviconPickerDialog,
@@ -62,6 +57,7 @@ import { useSettingsProjectGroups } from "./useSettingsProjectGroups";
 import { readUnloadedThreadCount } from "../../state/olderSettledShelf";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { errorToastDescription } from "~/components/errors/ErrorDetails";
+import { ProjectSettingsTabs } from "../../product/ProjectSettingsTabs";
 
 const ProjectIconPickerDialog = lazy(() =>
   import("./ProjectIconPickerDialog").then((module) => ({
@@ -517,7 +513,7 @@ function ProjectDetail({
 
   return (
     <>
-      <SettingsPageContainer className="gap-6">
+      <ProjectSettingsTabs members={group.memberProjects}>
         <Alert variant="info">
           <InfoIcon aria-hidden />
           <AlertDescription>
@@ -701,7 +697,7 @@ function ProjectDetail({
             }
           />
         </SettingsSection>
-      </SettingsPageContainer>
+      </ProjectSettingsTabs>
 
       <ProjectFaviconPickerDialog
         key={`${filePickerProject.environmentId}:${filePickerProject.workspaceRoot}:${faviconPickerOpen}`}

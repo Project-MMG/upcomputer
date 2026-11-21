@@ -1,7 +1,8 @@
-import type { ProjectId } from "@t3tools/contracts";
+import type { OrchestrationV2ThreadShell, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -40,7 +41,15 @@ type Connector = Composio["Service"];
 type BotAccess = {
   readonly projectId: ProjectId;
   readonly botId: TaskAgentId;
+  readonly threadId: ThreadId;
+};
+type ActionCaller = BotAccess & {
   readonly plan: boolean;
+  readonly runId: RunId | null;
+};
+type ActionInput = {
+  readonly slug: string;
+  readonly arguments: Schema.JsonObject;
 };
 type AssignedAction = ProjectToolActionDetails & { readonly fixedInputs: ReadonlyArray<string> };
 type AccessError = Effect.Effect<never, ProjectToolError>;
@@ -113,10 +122,14 @@ export class ProjectTools extends Context.Service<
     readonly execute: (
       scope: Invocation,
       effect: ProjectToolAction["effect"],
-      input: {
-        readonly slug: string;
-        readonly arguments: Schema.JsonObject;
-      },
+      input: ActionInput,
+    ) => Effect.Effect<Schema.Json, ProjectToolError>;
+    readonly confirmCaller: (scope: Invocation) => Effect.Effect<ActionCaller, ProjectToolError>;
+    readonly confirmBotChat: (target: BotAccess) => Effect.Effect<BotAccess, ProjectToolError>;
+    readonly readConnectedBotAction: (
+      target: BotAccess,
+      app: string,
+      input: ActionInput,
     ) => Effect.Effect<Schema.Json, ProjectToolError>;
   }
 >()("@t3tools/tasks-server/projectTools/ProjectTools") {}
@@ -228,40 +241,53 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const liveThread = Effect.fn("ProjectTools.liveThread")(function* (threadId: ThreadId) {
+    const thread = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(storageError));
+    if (thread === null || thread.deletedAt !== null || thread.archivedAt !== null) {
+      return yield* fail("not-a-bot");
+    }
+    return thread;
+  });
+  const botForThread = Effect.fn("ProjectTools.botForThread")(function* (
+    thread: OrchestrationV2ThreadShell,
+  ) {
+    const bot = yield* bots.forThread(thread.id).pipe(Effect.mapError(storageError));
+    if (bot === null || bot.projectId !== thread.projectId) return yield* fail("not-a-bot");
+    yield* requireProject(bot.projectId);
+    return { projectId: bot.projectId, botId: bot.agent.id, threadId: bot.threadId };
+  });
   const confirmCaller = Effect.fn("ProjectTools.confirmCaller")(function* (scope: Invocation) {
     const caller = scope.thread;
     if (scope.environmentId !== environmentId || caller === undefined || caller.subagent) {
       return yield* fail("not-a-bot");
     }
-    const thread = yield* threads
-      .getThreadShell(caller.threadId)
-      .pipe(Effect.mapError(storageError));
-    if (
-      thread === null ||
-      thread.deletedAt !== null ||
-      thread.archivedAt !== null ||
-      thread.activeRunId === null ||
-      thread.providerInstanceId !== caller.providerInstanceId
-    ) {
+    const thread = yield* liveThread(caller.threadId);
+    if (thread.activeRunId === null || thread.providerInstanceId !== caller.providerInstanceId) {
       return yield* fail("not-a-bot");
     }
-    const bot = yield* bots.forThread(caller.threadId).pipe(Effect.mapError(storageError));
-    if (bot === null || bot.projectId !== thread.projectId) return yield* fail("not-a-bot");
-    yield* requireProject(bot.projectId);
     return {
-      projectId: bot.projectId,
-      botId: bot.agent.id,
+      ...(yield* botForThread(thread)),
       runId: thread.activeRunId,
       plan: thread.interactionMode === "plan",
-    } satisfies BotAccess & { readonly runId: string };
+    };
+  });
+  const confirmBotChat = Effect.fn("ProjectTools.confirmBotChat")(function* (target: BotAccess) {
+    const thread = yield* liveThread(target.threadId);
+    const bot = yield* botForThread(thread);
+    if (
+      bot.threadId !== target.threadId ||
+      bot.projectId !== target.projectId ||
+      bot.botId !== target.botId
+    )
+      return yield* fail("not-a-bot");
+    return { ...bot, runId: null, plan: false };
   });
 
   const loadAccess = Effect.fn("ProjectTools.loadAccess")(function* (
-    scope: Invocation,
+    caller: ActionCaller,
     effect: ProjectToolAction["effect"],
     target: string | ProjectToolActionDetails,
   ) {
-    const caller = yield* confirmCaller(scope);
     if (caller.plan && effect === "write") return yield* fail("plan-mode");
     const slug = typeof target === "string" ? target : target.slug;
     const [row] = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
@@ -294,6 +320,56 @@ const make = Effect.gen(function* () {
       fixedInputs: direct?.fixedInputs ?? {},
       policy: direct ? row?.json : appGrant?.json,
     };
+  });
+
+  const executeAction = Effect.fn("ProjectTools.executeAction")(function* (
+    authorize: Effect.Effect<ActionCaller, ProjectToolError>,
+    effect: ProjectToolAction["effect"],
+    input: ActionInput,
+    connectedApp?: string,
+  ) {
+    const initial = yield* loadAccess(yield* authorize, effect, input.slug);
+    const { live } = initial;
+    if (connectedApp !== undefined) {
+      if (live.app !== connectedApp || initial.accountId === null) {
+        return yield* fail("account-unavailable");
+      }
+      if (
+        Object.entries(input.arguments).some(
+          ([key, value]) =>
+            Object.hasOwn(initial.fixedInputs, key) &&
+            !Equal.equals(initial.fixedInputs[key], value),
+        )
+      )
+        return yield* fail("workspace-input-conflict");
+    }
+    const args = { ...input.arguments, ...initial.fixedInputs };
+    yield* validate(live.inputSchema, args);
+    if (initial.accountId !== null) {
+      yield* activeAccount(initial.projectId, live.app, initial.accountId);
+    }
+    const session = {
+      userId: userId(initial.projectId),
+      action: live,
+      accountId: initial.accountId,
+    };
+    return yield* Effect.acquireUseRelease(
+      composio.createActionSession(session),
+      (id) =>
+        Effect.gen(function* () {
+          const current = yield* loadAccess(yield* authorize, effect, live);
+          if (
+            current.runId !== initial.runId ||
+            current.botId !== initial.botId ||
+            current.projectId !== initial.projectId ||
+            current.policy !== initial.policy ||
+            current.accountId !== initial.accountId
+          )
+            return yield* fail("policy-changed");
+          return yield* composio.execute(id, live, args);
+        }),
+      composio.closeSession,
+    );
   });
 
   return ProjectTools.of({
@@ -593,37 +669,14 @@ const make = Effect.gen(function* () {
         ...(apps.length ? { apps } : {}),
       };
     }),
-    execute: Effect.fn("ProjectTools.execute")(function* (scope, effect, input) {
-      const initial = yield* loadAccess(scope, effect, input.slug);
-      const { live } = initial;
-      const args = { ...input.arguments, ...initial.fixedInputs };
-      yield* validate(live.inputSchema, args);
-      if (initial.accountId !== null) {
-        yield* activeAccount(initial.projectId, live.app, initial.accountId);
-      }
-      const session = {
-        userId: userId(initial.projectId),
-        action: live,
-        accountId: initial.accountId,
-      };
-      return yield* Effect.acquireUseRelease(
-        composio.createActionSession(session),
-        (id) =>
-          Effect.gen(function* () {
-            const current = yield* loadAccess(scope, effect, live);
-            if (
-              current.runId !== initial.runId ||
-              current.botId !== initial.botId ||
-              current.projectId !== initial.projectId ||
-              current.policy !== initial.policy ||
-              current.accountId !== initial.accountId
-            )
-              return yield* fail("policy-changed");
-            return yield* composio.execute(id, live, args);
-          }),
-        composio.closeSession,
-      );
-    }),
+    confirmCaller,
+    confirmBotChat,
+    execute: Effect.fn("ProjectTools.execute")((scope, effect, input) =>
+      executeAction(confirmCaller(scope), effect, input),
+    ),
+    readConnectedBotAction: Effect.fn("ProjectTools.readConnectedBotAction")((target, app, input) =>
+      executeAction(confirmBotChat(target), "read", input, app),
+    ),
   });
 });
 

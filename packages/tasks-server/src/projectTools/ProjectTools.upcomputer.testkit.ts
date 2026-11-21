@@ -4,12 +4,18 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import {
+  gmailActionData,
+  gmailActions,
+  gmailApp,
+  gmailFixtureKey,
+} from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 
 export const read = "FIXTURE_READ_REPO";
 export const write = "FIXTURE_CREATE_REPO_NOTE";
 export const publicRead = "PUBLIC_LIST_ITEMS";
 export const unknownEffect = "FIXTURE_UNCLASSIFIED";
-export const fixtureKey = "composio-key-for-tests";
+export const fixtureKey = gmailFixtureKey;
 
 const repo = { type: "string", minLength: 1 };
 const tool = (
@@ -89,6 +95,7 @@ export const makeComposioFixture = () => {
     }),
     tool(publicRead, "List public items", ["readOnlyHint"], false, {}),
     tool(unknownEffect, "Unclassified operation", [], true, {}),
+    ...gmailActions,
   ];
   const apps = [
     {
@@ -100,6 +107,7 @@ export const makeComposioFixture = () => {
     },
     { slug: "public", name: "Public", no_auth: true },
     { slug: "config", name: "Needs configuration", no_auth: false },
+    gmailApp,
   ];
   let sequence = 0;
   let failNextWrite = false;
@@ -253,7 +261,10 @@ export const makeComposioFixture = () => {
         }
         return response({
           result_type: "completed",
-          data: { slug: input.tool_slug, arguments: input.arguments },
+          data: gmailActionData(input.tool_slug, input.arguments.thread_id) ?? {
+            slug: input.tool_slug,
+            arguments: input.arguments,
+          },
         });
       }
       return response({}, 404);

@@ -100,6 +100,16 @@ The environment owner sets up Composio by saving a project API key as plain text
 installation, that directory is `~/.upcomputer/userdata`. Restrict the file to the
 server user, then refresh Tools.
 
+## Open a Gmail inbox beside a bot chat
+
+Connect Gmail in the bot's project and assign **Fetch emails** and **Fetch Message by Thread ID** to
+that bot under **Individual actions**. If the bot uses a Home Repo, point its instructions to the
+shared `AGENTS.md` and its own playbook. Ask the bot in its chat to set up a Gmail workspace.
+
+After the bot saves the layout, choose **Gmail inbox** in the chat. Open an email to read its
+thread. Ask the bot to rearrange the inbox and thread reader if you want a different layout. The
+saved layout opens again from the same chat.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

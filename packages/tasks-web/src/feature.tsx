@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { BotIcon, ListTodoIcon, MessageSquareTextIcon } from "lucide-react";
+import { BotIcon, InboxIcon, ListTodoIcon, MessageSquareTextIcon } from "lucide-react";
 import { msg } from "gt-react";
 
 // The pure host module, not the web extension API: the product entry imports
@@ -11,7 +11,8 @@ import {
   type ExperimentalWebThreadRowAccessoryProps,
 } from "../../../apps/web/src/product/WebFeature.ts";
 import { TasksWebRpcGroup } from "./rpc/tasksRpcGroup.ts";
-import { ProjectToolsRpcGroup } from "@t3tools/tasks-contracts/v1";
+import { GmailWorkspaceRpcGroup, ProjectToolsRpcGroup } from "@t3tools/tasks-contracts/v1";
+import { gmailWorkspaceSurfaceId } from "./gmailWorkspace/surface.ts";
 
 const LazyProjectTools = lazy(() => import("./projectTools/ProjectToolsPanel.tsx"));
 
@@ -53,6 +54,7 @@ export const isBotChatThread = (thread: ExperimentalWebThreadAccessoryProps) =>
 const LazyBotHeader = lazy(() =>
   import("./bots/Bots.tsx").then((module) => ({ default: module.BotHeader })),
 );
+const LazyGmailWorkspaceToolbar = lazy(() => import("./gmailWorkspace/GmailWorkspaceToolbar.tsx"));
 
 function SidebarBots() {
   return (
@@ -108,7 +110,7 @@ function ChatHeaderRunCounts(props: ExperimentalWebThreadAccessoryProps) {
 export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
   id: "upcomputer.tasks.web",
   version: 1,
-  rpcGroups: [TasksWebRpcGroup, ProjectToolsRpcGroup],
+  rpcGroups: [TasksWebRpcGroup, ProjectToolsRpcGroup, GmailWorkspaceRpcGroup],
   projectTools: (props) => (
     <Suspense fallback={null}>
       <LazyProjectTools {...props} />
@@ -116,6 +118,11 @@ export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
   ),
   threadRowAccessory: ThreadRowRunCounts,
   chatHeaderAccessory: ChatHeaderRunCounts,
+  chatToolbarAccessory: (props) => (
+    <Suspense fallback={null}>
+      <LazyGmailWorkspaceToolbar {...props} />
+    </Suspense>
+  ),
   threadActions: (thread) => botMenu?.botThreadActions(thread) ?? [],
   sidebarSection: SidebarBots,
   coordinator: TaskReminders,
@@ -136,6 +143,12 @@ export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
       shortcut: "K",
       icon: ListTodoIcon,
       load: () => import("./ui/TasksPanel.tsx"),
+    },
+    {
+      id: gmailWorkspaceSurfaceId,
+      label: msg("Gmail inbox"),
+      icon: InboxIcon,
+      load: () => import("./gmailWorkspace/GmailWorkspacePanel.tsx"),
     },
   ],
   routes: [

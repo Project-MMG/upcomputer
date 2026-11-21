@@ -175,6 +175,14 @@ export function ProductChatHeaderAccessory(props: ExperimentalWebThreadAccessory
   return chatHeaderAccessoryElements(WEB_PRODUCT, props);
 }
 
+export function ProductChatToolbarAccessory(props: ExperimentalWebThreadAccessoryProps) {
+  return WEB_PRODUCT.features.flatMap((feature) =>
+    feature.chatToolbarAccessory
+      ? [createElement(feature.chatToolbarAccessory, { ...props, key: feature.id })]
+      : [],
+  );
+}
+
 export function ProductSidebarSections() {
   return WEB_PRODUCT.features.flatMap((feature) =>
     feature.sidebarSection ? [createElement(feature.sidebarSection, { key: feature.id })] : [],
@@ -234,9 +242,11 @@ export function ProductSettingsPage(props: { readonly pathname: string }) {
   );
 }
 
-/** Feature surfaces the right panel beside a thread offers after core's. */
-export function productRightPanelSurfaces(): ReadonlyArray<ExperimentalWebRightPanelSurfaceContribution> {
-  return WEB_PRODUCT.rightPanelSurfaces;
+/** Feature surfaces the right panel's launcher offers after core's. */
+export function productRightPanelSurfaces() {
+  return WEB_PRODUCT.rightPanelSurfaces.flatMap((surface) =>
+    surface.shortcut === undefined ? [] : [{ ...surface, shortcut: surface.shortcut }],
+  );
 }
 
 export function productRightPanelSurface(

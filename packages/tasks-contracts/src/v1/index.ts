@@ -1,5 +1,6 @@
 export * from "./agents.ts";
 export * from "./bots.ts";
+export * from "./gmailWorkspace.ts";
 export * from "./automations.ts";
 export * from "./prompts.ts";
 export * from "./projectTools.ts";

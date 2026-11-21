@@ -207,6 +207,7 @@ import {
   isProductFeatureShown,
   resolveProductThreadReferenceCopyTarget,
 } from "~/product/productFlags";
+import { ProductChatToolbarAccessory } from "~/product/ProductSlots";
 import { showsUpComputerComposerContextRow } from "~/composerContextRow/composerContextRowSurface";
 import { UpComputerComposerContextRow } from "~/composerContextRow/UpComputerComposerContextRow";
 import {
@@ -3515,6 +3516,10 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
             {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
             {threadDetailsTogglePlacement === "header-overlay" ? threadPanelHeaderControl : null}
+            <ProductChatToolbarAccessory
+              environmentId={activeThread.environmentId}
+              threadId={activeThread.id}
+            />
             <ChatHeader
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
@@ -3575,7 +3580,7 @@ export default function ChatView(props: ChatViewProps) {
             {/* UpComputer: isolate keeps the right-edge minimap's z-index under the docked details card. */}
             <div
               {...conversationArea}
-              className="relative isolate flex min-h-0 flex-1 flex-col bg-background group-has-[[data-chat-header-hidden]]/chat-column:-mt-[var(--workspace-topbar-height)]"
+              className="relative isolate flex min-h-0 flex-1 flex-col bg-background group-has-[[data-chat-header-hidden]]/chat-column:group-not-has-[[data-chat-toolbar-accessory]]/chat-column:-mt-[var(--workspace-topbar-height)]"
             >
               <WorkspaceMutationIdContext value={workspaceMutationId}>
                 <ThreadTimeline

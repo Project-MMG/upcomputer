@@ -287,6 +287,12 @@ test(
     await expect(dismissed).toBeVisible();
     await expect(draft).toBeHidden();
     await app.screenshot("reopened-dismissed-draft");
+    await screen.getByRole("button", "Restore draft").tap();
+    await expect(screen.getByText(edited)).toBeVisible();
+    await expect(draftReady).toHaveCount(1);
+    await app.screenshot("restored-edited-draft");
+    await screen.getByRole("button", "Dismiss draft").tap();
+    await expect(dismissed).toBeVisible();
 
     await runFixture(changeAccess(origin, "revoke"));
     await runFixture(runCheck(origin, scheduleId));

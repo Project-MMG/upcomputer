@@ -42,9 +42,32 @@ export function GmailReplyDraft({
     }
   }
 
-  if (current.status === "dismissed") {
-    return <p className="pt-2 text-sm text-muted-foreground">{gt("Draft dismissed")}</p>;
-  }
+  const failure = error ? (
+    <p role="alert" className="text-sm text-destructive">
+      {error}
+    </p>
+  ) : null;
+
+  if (current.status === "dismissed")
+    return (
+      <div className="space-y-2 pt-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm text-muted-foreground">{gt("Draft dismissed")}</p>
+          {canWrite ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => void update(current.revision, { kind: "restore" })}
+            >
+              {gt("Restore draft")}
+            </Button>
+          ) : null}
+        </div>
+        {failure}
+      </div>
+    );
 
   return (
     <section className="space-y-2 rounded-md border border-border bg-muted/25 p-3">
@@ -119,11 +142,7 @@ export function GmailReplyDraft({
           ) : null}
         </>
       )}
-      {error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
+      {failure}
     </section>
   );
 }

@@ -116,7 +116,7 @@ that need one. Enable it in **Settings → Scheduled prompts**.
 
 The inbox marks threads with a reply ready for review. Open a thread to read the draft, edit and
 save it, or dismiss it. The reply stays in Up.computer. Later checks keep the version you saved
-and remember which drafts you dismissed.
+and remember which drafts you dismissed. You can restore a dismissed draft from the same message.
 
 ## Bot status
 

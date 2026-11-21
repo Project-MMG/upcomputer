@@ -86,6 +86,7 @@ const updateDraftInput = Schema.Struct({
   change: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("edit"), body: GmailReplyBody }),
     Schema.Struct({ kind: Schema.Literal("dismiss") }),
+    Schema.Struct({ kind: Schema.Literal("restore") }),
   ]),
 });
 export type GmailDraftUpdateInput = typeof updateDraftInput.Type;

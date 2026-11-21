@@ -378,6 +378,11 @@ const make = Effect.gen(function* () {
     }),
     updateDraft: Effect.fn("GmailWorkspace.updateDraft")(function* (input) {
       yield* requireLayout(input);
+      const currentStatus = input.change.kind === "restore" ? "dismissed" : "pending";
+      const change =
+        input.change.kind === "edit"
+          ? sql`body = ${input.change.body}`
+          : sql`status = ${currentStatus === "dismissed" ? "pending" : "dismissed"}`;
       return yield* tools.withConnectedBotReadAccess(
         input,
         "gmail",
@@ -386,11 +391,10 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const [draft] = yield* sql<GmailReplyDraft>`
               UPDATE gmail_workspace_replies
-              SET ${input.change.kind === "edit" ? sql`body = ${input.change.body}` : sql`status = 'dismissed'`},
-                  revision = revision + 1
+              SET ${change}, revision = revision + 1
               WHERE id = ${input.draftId} AND project_id = ${input.projectId} AND bot_id = ${input.botId}
                 AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
-                AND status = 'pending' AND revision = ${input.revision}
+                AND status = ${currentStatus} AND revision = ${input.revision}
               RETURNING ${draftColumns}
             `.pipe(Effect.mapError(storageError));
             if (!draft) return yield* new ProjectToolError({ code: "workspace-draft-changed" });

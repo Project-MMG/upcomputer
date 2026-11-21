@@ -449,6 +449,18 @@ it.effect("saves and replaces a bot's Gmail layout and reads the project's conne
       body,
       revision: 2,
     });
+    const dismissed = yield* workspace.updateDraft({
+      ...edit,
+      revision: 2,
+      change: { kind: "dismiss" },
+    });
+    expect(dismissed).toMatchObject({ status: "dismissed", revision: 3 });
+    const restore = { ...edit, change: { kind: "restore" } } as const;
+    expect((yield* Effect.flip(workspace.updateDraft(restore))).code).toBe(
+      "workspace-draft-changed",
+    );
+    const restored = yield* workspace.updateDraft({ ...restore, revision: dismissed.revision });
+    expect(restored).toMatchObject({ status: "pending", body, revision: 4 });
     yield* tools.connection({ ...connection, operation: "start" });
     Array.from(backend.accounts.values()).at(-1)!.status = "ACTIVE";
     yield* tools.connection({ ...connection, operation: "finish" });
@@ -456,7 +468,7 @@ it.effect("saves and replaces a bot's Gmail layout and reads the project's conne
       (yield* Effect.flip(
         workspace.updateDraft({
           ...edit,
-          revision: 2,
+          revision: restored.revision,
           change: { kind: "dismiss" },
         }),
       )).code,

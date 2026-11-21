@@ -4,7 +4,7 @@
 
 - [Getting started](./user/getting-started.md): from install to your first task done by a worker.
 - [Install Up.computer](./user/install.md)
-- [First launch and setup](./user/welcome-wizard.md)
+- [Provider setup](./user/install.md#providers)
 - [FAQ](./user/faq.md)
 - [Threads from older Up.computer versions](./user/thread-migration.md)
 
@@ -90,7 +90,7 @@ source alone does not explain. Most code changes do not need an internal documen
 
 - [Development and local builds](./operations/development.md)
 - [Scenarios: real-app proof for a fix](./operations/scenarios.md)
-- [Upstream sync](./operations/upstream-sync.md)
+- [Repository workflow](./operations/upstream-sync.md)
 - [UpComputer Connect setup](./operations/upcomputer-connect-setup.md)
 - [Connect setup (upstream)](./operations/connect-setup.md)
 - [Release](./operations/release.md)
@@ -100,8 +100,8 @@ source alone does not explain. Most code changes do not need an internal documen
 
 ### User guides for features Up.computer hides
 
-These pages describe upstream features that the Up.computer build does not show (see
-[product flags](./internals/product-flags.md)). They stay so upstream syncs stay cheap.
+These pages cover capabilities that some product configurations hide. See
+[product flags](./internals/product-flags.md) for the current configuration.
 
 - [Devices](./user/devices.md): hidden by the `devices` flag.
 - [Triage an issue](./user/triage.md): hidden by the `triage` flag. Its playbook files issues

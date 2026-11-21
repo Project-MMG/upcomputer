@@ -1,6 +1,6 @@
 # Product flags
 
-UpComputer ships on upstream core but does not ship every upstream feature. It hides them instead of deleting them, so an upstream sync only has to keep a few hook lines instead of re-deleting rewritten files.
+Up.computer uses product flags to control which shared features a product configuration exposes.
 
 `packages/shared/src/productFlags.ts` is the one place that says what a product shows:
 
@@ -71,6 +71,7 @@ Some upstream UI is replaced rather than hidden. `ProductSurfaces` in the same m
 
 The mobile app is not a flag: `pnpm-workspace.yaml` excludes `apps/mobile` from install and build, and `allowUnusedPatches` keeps its patch entries valid. Upstream's mobile CI workflows filter on `@t3tools/mobile` and would fail; this fork does not run them.
 
-## Sync rule
+## Change a product flag
 
-Every hook goes through `productFlags`, `whenProductFeature` or `isProductFeatureShown`. After an upstream sync, `git grep -n -e productFlags -e whenProductFeature -e isProductFeatureShown -e productSurface` lists the hooks to re-check. When upstream adds a new entry point to a hidden feature, gate it the same way.
+Use `productFlags`, `whenProductFeature`, or `isProductFeatureShown` for new visibility hooks.
+When adding an entry point for a gated feature, check that it honors the same flag.

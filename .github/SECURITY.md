@@ -2,8 +2,8 @@
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately to **support@up.computer**. Do not include
-secrets, access tokens, personal data, or exploit details in a public GitHub issue.
+Report suspected vulnerabilities privately to the Project-MMG maintainers. Use the repository's
+private vulnerability report when available. Redact credentials and personal data.
 
 Include the affected version, operating system, reproduction steps, expected impact, and any
 suggested mitigation. You should receive an acknowledgement within a reasonable time, but no fixed

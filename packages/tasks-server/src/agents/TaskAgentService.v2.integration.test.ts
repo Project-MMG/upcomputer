@@ -49,6 +49,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 
 import { McpSchema, McpServer } from "effect/ai";
+import { HttpClient } from "effect/http";
 import type * as Rpc from "effect/rpc/Rpc";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcTest from "effect/rpc/RpcTest";
@@ -86,7 +87,9 @@ import {
   productMcpToolsLayer,
   rpcContributionHandlersLayer,
   rpcContributionScopes,
+  ServerEnvironment,
   ServerProduct,
+  ServerSecretStore,
 } from "../../../../apps/server/src/extensionApi.ts";
 import { TASK_MIGRATION_CONTRIBUTION } from "../persistence/migrations/index.ts";
 import { TASK_TOOL_SPECS } from "../tools/TaskToolDefinitions.ts";
@@ -508,6 +511,18 @@ function makeLayer(
     // The tasks Inbox reads these when it is built; these tests never create it.
     Layer.provideMerge(Layer.mock(ProjectService)({})),
     Layer.provideMerge(Layer.succeed(ServerConfig, { baseDir: cwd } as never)),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die(new Error("Unexpected outbound HTTP request"))),
+        ),
+        Layer.mock(ServerEnvironment)({
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:task-agents-v2")),
+        }),
+        Layer.mock(ServerSecretStore)({ get: () => Effect.succeedNone }),
+      ),
+    ),
     // A custom instance id runs only when it is configured.
     Layer.provideMerge(
       ServerSettings.layerTest({ providerInstances: { [instanceId]: { driver } } }).pipe(

@@ -1,4 +1,5 @@
 export const gmailFixtureKey = "composio-key-for-tests";
+export const gmailFixtureDeliveryFile = "gmail-question-delivered";
 export const gmailListAction = "GMAIL_FETCH_EMAILS";
 export const gmailThreadAction = "GMAIL_FETCH_MESSAGE_BY_THREAD_ID";
 
@@ -76,9 +77,10 @@ const earlierQuestion = {
   messageText: "Hello VT, I have a question about order VT-204.",
 };
 
-const messages = [earlierQuestion, receipt, customerQuestion];
-
-export function gmailActionData(slug: string, threadId: unknown) {
+export function gmailActionData(slug: string, threadId: unknown, questionDelivered = true) {
+  const messages = questionDelivered
+    ? [earlierQuestion, receipt, customerQuestion]
+    : [earlierQuestion, receipt];
   if (slug === gmailListAction) {
     return {
       messages: messages.map(({ messageText: _body, ...summary }) => summary),

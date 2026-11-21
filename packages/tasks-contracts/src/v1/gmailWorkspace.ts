@@ -20,6 +20,23 @@ const GmailWorkspaceTarget = Schema.Struct(botChat);
 export type GmailWorkspaceTarget = typeof GmailWorkspaceTarget.Type;
 
 export const GmailThreadId = Schema.NonEmptyString.check(Schema.isMaxLength(128));
+export const GmailMessageId = Schema.NonEmptyString.check(Schema.isMaxLength(128));
+export const GMAIL_REPLY_BODY_LIMIT = 12_000;
+const GmailReplyBody = Schema.String.check(
+  Schema.isMaxLength(GMAIL_REPLY_BODY_LIMIT),
+  Schema.isPattern(/\S/u),
+);
+const GmailDraftId = Schema.NonEmptyString.check(Schema.isMaxLength(128));
+const GmailDraftRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+
+export const GmailReplyDraft = Schema.Struct({
+  id: GmailDraftId,
+  status: Schema.Literals(["pending", "dismissed"]),
+  revision: GmailDraftRevision,
+  recipient: Schema.String,
+  body: GmailReplyBody,
+});
+export type GmailReplyDraft = typeof GmailReplyDraft.Type;
 
 const inboxThread = Schema.Struct({
   threadId: GmailThreadId,
@@ -27,6 +44,7 @@ const inboxThread = Schema.Struct({
   sender: Schema.String,
   preview: Schema.String,
   unread: Schema.Boolean,
+  pendingReply: Schema.optionalKey(Schema.Literal(true)),
 });
 const mail = Schema.Struct({
   messageId: Schema.NonEmptyString,
@@ -34,6 +52,7 @@ const mail = Schema.Struct({
   sender: Schema.String,
   receivedAt: Schema.String,
   body: Schema.String,
+  draft: Schema.optionalKey(GmailReplyDraft),
 });
 const inboxPage = Schema.Struct({
   threads: Schema.Array(inboxThread),
@@ -52,11 +71,32 @@ const threadInput = Schema.Struct({ ...botChat, ...page, gmailThreadId: GmailThr
 export type GmailInboxInput = typeof inboxInput.Type;
 export type GmailThreadInput = typeof threadInput.Type;
 
+export const GmailInboxCheck = Schema.Struct(page);
+export const GmailInboxDecision = Schema.Struct({
+  accountId: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+  gmailThreadId: GmailThreadId,
+  messageId: GmailMessageId,
+  body: Schema.NullOr(GmailReplyBody),
+});
+const updateDraftInput = Schema.Struct({
+  ...botChat,
+  gmailThreadId: GmailThreadId,
+  draftId: GmailDraftId,
+  revision: GmailDraftRevision,
+  change: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("edit"), body: GmailReplyBody }),
+    Schema.Struct({ kind: Schema.Literal("dismiss") }),
+    Schema.Struct({ kind: Schema.Literal("restore") }),
+  ]),
+});
+export type GmailDraftUpdateInput = typeof updateDraftInput.Type;
+
 export const GMAIL_WORKSPACE_RPC_NAMESPACE = "upcomputer.gmail-workspace.v1";
 export const GMAIL_WORKSPACE_RPC_METHODS = {
   layout: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.layout`,
   inbox: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.inbox`,
   thread: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.thread`,
+  updateDraft: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.updateDraft`,
 } as const;
 
 const M = GMAIL_WORKSPACE_RPC_METHODS;
@@ -68,4 +108,9 @@ export const GmailWorkspaceRpcGroup = RpcGroup.make(
   }),
   Rpc.make(M.inbox, { payload: inboxInput, success: inboxPage, error: ProjectToolError }),
   Rpc.make(M.thread, { payload: threadInput, success: threadPage, error: ProjectToolError }),
+  Rpc.make(M.updateDraft, {
+    payload: updateDraftInput,
+    success: GmailReplyDraft,
+    error: ProjectToolError,
+  }),
 );

@@ -24,7 +24,8 @@ export function useGmailWorkspaceLayout(
     () => gmailWorkspaceApi(environmentId, { threadId, projectId, botId }),
     [environmentId, threadId, projectId, botId],
   );
-  return { ref, api, layout: useRemoteData(api.layout, shell?.latestRun?.completedAt) };
+  const refreshKey = shell?.latestRun?.completedAt;
+  return { ref, api, refreshKey, layout: useRemoteData(api.layout, refreshKey) };
 }
 
 function GmailWorkspaceButton({

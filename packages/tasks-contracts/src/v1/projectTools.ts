@@ -162,6 +162,10 @@ const messages = {
   "workspace-input-conflict":
     "A fixed project tool input conflicts with the Gmail workspace request.",
   "workspace-storage-unavailable": "Up.computer could not load or save the Gmail workspace.",
+  "workspace-account-changed": "The Gmail connection changed. Check the inbox again.",
+  "workspace-message-changed": "This Gmail message is no longer available for a reply.",
+  "workspace-recipient-unavailable": "No reply address was found for this Gmail message.",
+  "workspace-draft-changed": "This draft changed or is no longer available. Reopen it to continue.",
   "storage-unavailable": "Up.computer could not load or save this project's tools.",
   "credentials-unavailable": "Up.computer could not read this environment's Composio key.",
   "composio-unavailable": "Up.computer could not reach Composio or read its response.",

@@ -51,6 +51,7 @@ type ActionInput = {
   readonly slug: string;
   readonly arguments: Schema.JsonObject;
 };
+type BotReadCaller = BotAccess | Invocation;
 type AssignedAction = ProjectToolActionDetails & { readonly fixedInputs: ReadonlyArray<string> };
 type AccessError = Effect.Effect<never, ProjectToolError>;
 type ConnectorOutput<Method extends "apps" | "app" | "actions"> = ReturnType<Connector[Method]>;
@@ -127,10 +128,20 @@ export class ProjectTools extends Context.Service<
     readonly confirmCaller: (scope: Invocation) => Effect.Effect<ActionCaller, ProjectToolError>;
     readonly confirmBotChat: (target: BotAccess) => Effect.Effect<BotAccess, ProjectToolError>;
     readonly readConnectedBotAction: (
-      target: BotAccess,
+      caller: BotReadCaller,
       app: string,
       input: ActionInput,
-    ) => Effect.Effect<Schema.Json, ProjectToolError>;
+      expectedAccountId?: string,
+    ) => Effect.Effect<
+      { readonly accountId: string; readonly data: Schema.Json },
+      ProjectToolError
+    >;
+    readonly withConnectedBotReadAccess: <A>(
+      caller: BotReadCaller,
+      app: string,
+      inputs: readonly [ActionInput, ...ActionInput[]],
+      use: (accountId: string) => Effect.Effect<A, ProjectToolError>,
+    ) => Effect.Effect<A, ProjectToolError>;
   }
 >()("@t3tools/tasks-server/projectTools/ProjectTools") {}
 
@@ -322,26 +333,43 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const connectedAccountId = Effect.fn("ProjectTools.connectedAccountId")(function* (
+    access: Effect.Success<ReturnType<typeof loadAccess>>,
+    app: string,
+    input: ActionInput,
+  ) {
+    if (access.live.app !== app || access.accountId === null) {
+      return yield* fail("account-unavailable");
+    }
+    if (
+      Object.entries(input.arguments).some(
+        ([key, value]) =>
+          Object.hasOwn(access.fixedInputs, key) && !Equal.equals(access.fixedInputs[key], value),
+      )
+    ) {
+      return yield* fail("workspace-input-conflict");
+    }
+    return access.accountId;
+  });
+  const authorizeBotRead = (caller: BotReadCaller) =>
+    "environmentId" in caller ? confirmCaller(caller) : confirmBotChat(caller);
+  const sameCaller = (left: ActionCaller, right: ActionCaller) =>
+    left.runId === right.runId && left.botId === right.botId && left.projectId === right.projectId;
+
   const executeAction = Effect.fn("ProjectTools.executeAction")(function* (
     authorize: Effect.Effect<ActionCaller, ProjectToolError>,
     effect: ProjectToolAction["effect"],
     input: ActionInput,
     connectedApp?: string,
+    expectedAccountId?: string,
   ) {
     const initial = yield* loadAccess(yield* authorize, effect, input.slug);
     const { live } = initial;
     if (connectedApp !== undefined) {
-      if (live.app !== connectedApp || initial.accountId === null) {
-        return yield* fail("account-unavailable");
+      const accountId = yield* connectedAccountId(initial, connectedApp, input);
+      if (expectedAccountId !== undefined && expectedAccountId !== accountId) {
+        return yield* fail("workspace-account-changed");
       }
-      if (
-        Object.entries(input.arguments).some(
-          ([key, value]) =>
-            Object.hasOwn(initial.fixedInputs, key) &&
-            !Equal.equals(initial.fixedInputs[key], value),
-        )
-      )
-        return yield* fail("workspace-input-conflict");
     }
     const args = { ...input.arguments, ...initial.fixedInputs };
     yield* validate(live.inputSchema, args);
@@ -353,23 +381,23 @@ const make = Effect.gen(function* () {
       action: live,
       accountId: initial.accountId,
     };
-    return yield* Effect.acquireUseRelease(
+    const recheck = Effect.gen(function* () {
+      const current = yield* loadAccess(yield* authorize, effect, live);
+      if (
+        !sameCaller(current, initial) ||
+        current.policy !== initial.policy ||
+        current.accountId !== initial.accountId
+      ) {
+        return yield* fail("policy-changed");
+      }
+    });
+    const data = yield* Effect.acquireUseRelease(
       composio.createActionSession(session),
-      (id) =>
-        Effect.gen(function* () {
-          const current = yield* loadAccess(yield* authorize, effect, live);
-          if (
-            current.runId !== initial.runId ||
-            current.botId !== initial.botId ||
-            current.projectId !== initial.projectId ||
-            current.policy !== initial.policy ||
-            current.accountId !== initial.accountId
-          )
-            return yield* fail("policy-changed");
-          return yield* composio.execute(id, live, args);
-        }),
+      (id) => recheck.pipe(Effect.andThen(composio.execute(id, live, args))),
       composio.closeSession,
     );
+    if (connectedApp !== undefined) yield* recheck;
+    return { data, accountId: initial.accountId };
   });
 
   return ProjectTools.of({
@@ -672,11 +700,50 @@ const make = Effect.gen(function* () {
     confirmCaller,
     confirmBotChat,
     execute: Effect.fn("ProjectTools.execute")((scope, effect, input) =>
-      executeAction(confirmCaller(scope), effect, input),
+      Effect.map(executeAction(confirmCaller(scope), effect, input), ({ data }) => data),
     ),
-    readConnectedBotAction: Effect.fn("ProjectTools.readConnectedBotAction")((target, app, input) =>
-      executeAction(confirmBotChat(target), "read", input, app),
+    readConnectedBotAction: Effect.fn("ProjectTools.readConnectedBotAction")(
+      function* (caller, app, input, expectedAccountId) {
+        const result = yield* executeAction(
+          authorizeBotRead(caller),
+          "read",
+          input,
+          app,
+          expectedAccountId,
+        );
+        if (result.accountId === null) return yield* fail("account-unavailable");
+        return { data: result.data, accountId: result.accountId };
+      },
     ),
+    withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(function* <A>(
+      caller: BotReadCaller,
+      app: string,
+      [first, ...rest]: readonly [ActionInput, ...ActionInput[]],
+      use: (accountId: string) => Effect.Effect<A, ProjectToolError>,
+    ) {
+      const authorize = authorizeBotRead(caller);
+      const initial = yield* authorize;
+      return yield* lock.withLock(
+        initial.projectId,
+        Effect.gen(function* () {
+          const owner = yield* authorize;
+          if (!sameCaller(owner, initial)) return yield* fail("policy-changed");
+          const checkAction = Effect.fn("ProjectTools.checkConnectedAction")(function* (
+            input: ActionInput,
+          ) {
+            const access = yield* loadAccess(owner, "read", input.slug);
+            return yield* connectedAccountId(access, app, input);
+          });
+          const accountId = yield* checkAction(first);
+          for (const input of rest) {
+            if ((yield* checkAction(input)) !== accountId) return yield* fail("policy-changed");
+          }
+          yield* activeAccount(owner.projectId, app, accountId);
+          if (!sameCaller(yield* authorize, owner)) return yield* fail("policy-changed");
+          return yield* use(accountId);
+        }),
+      );
+    }),
   });
 });
 

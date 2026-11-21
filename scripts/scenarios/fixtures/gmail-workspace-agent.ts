@@ -2,6 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
+import { customerQuestion, receipt } from "./gmail-workspace-data.ts";
 
 type McpServer = {
   readonly name: string;
@@ -13,6 +14,11 @@ type Prompt = {
   readonly prompt: ReadonlyArray<{ readonly text?: string }>;
 };
 type Message = { readonly id?: string | number; readonly method: string; readonly params: unknown };
+type ToolResult = {
+  readonly isError?: boolean;
+  readonly content: readonly { readonly text: string }[];
+  readonly structuredContent?: { readonly code: string };
+};
 
 const model = { modelId: "workspace", name: "Scripted Gmail workspace" };
 const models = { currentModelId: model.modelId, availableModels: [model] };
@@ -21,10 +27,10 @@ let sequence = 0;
 const send = (frame: object) =>
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...frame })}\n`);
 
-async function saveLayout(
+async function withMcp<A>(
   endpoint: string,
   authorization: string,
-  layout: { readonly title: string; readonly order: string },
+  run: (call: (name: string, args: object) => Promise<ToolResult>) => Promise<A>,
 ) {
   const url = new URL(endpoint);
   if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")
@@ -50,23 +56,24 @@ async function saveLayout(
   await opened.json();
   headers.set("mcp-session-id", sessionId);
   headers.set("mcp-protocol-version", "2025-06-18");
+  let id = 1;
   try {
-    const saved = await post(2, "tools/call", { name: "gmail_workspace_save", arguments: layout });
-    const reply = (await saved.json()) as {
-      result?: { isError?: boolean; content: readonly { text: string }[] };
-      error?: { message: string };
-    };
-    if (!saved.ok || !reply.result || reply.result.isError) {
-      throw new Error(
-        reply.result?.content[0]?.text ??
-          reply.error?.message ??
-          `MCP save returned ${saved.status}.`,
-      );
-    }
-    return JSON.parse(reply.result.content[0]?.text ?? "null") as typeof layout;
+    return await run(async (name, args) => {
+      const response = await post(++id, "tools/call", { name, arguments: args });
+      const reply = (await response.json()) as { result?: ToolResult; error?: { message: string } };
+      if (!response.ok || !reply.result) {
+        throw new Error(reply.error?.message ?? `MCP call returned ${response.status}.`);
+      }
+      return reply.result;
+    });
   } finally {
     await fetch(url, { method: "DELETE", headers });
   }
+}
+
+function readResult(result: ToolResult): unknown {
+  if (result.isError) throw new Error(result.content[0]?.text ?? "Fixture MCP tool failed.");
+  return JSON.parse(result.content[0]?.text ?? "null");
 }
 
 async function runPrompt({ sessionId, prompt }: Prompt) {
@@ -89,9 +96,48 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
   const row = (revised ? /^Revise: (.+) \((.+)\)$/m : /^Create: (.+) \((.+)\)$/m).exec(playbook);
   if (prefix === undefined || !row?.[1] || !row[2])
     throw new Error("The fixture playbook did not describe a layout.");
-  const result = await saveLayout(endpoint, authorization, {
-    title: `${prefix} ${row[1]}`,
-    order: row[2],
+  const output = await withMcp(endpoint, authorization, async (call) => {
+    if (!text.includes("Check the Gmail inbox for new mail.")) {
+      const result = readResult(
+        await call("gmail_workspace_save", { title: `${prefix} ${row[1]}`, order: row[2] }),
+      ) as { readonly title: string };
+      return `Saved ${result.title} from the Home Repo and Email playbook.`;
+    }
+    const review = /^Review with: (.+)$/m.exec(playbook)?.[1];
+    const signoff = /^Sign-off: (.+)$/m.exec(shared)?.[1];
+    if (review !== "gmail_workspace_check" || !signoff) {
+      throw new Error("The fixture playbook did not describe inbox review.");
+    }
+    const checked = await call(review, {});
+    const errorCode = checked.structuredContent?.code;
+    if (checked.isError) return `Gmail check blocked by ${errorCode}.`;
+    const { accountId, candidates } = readResult(checked) as {
+      readonly accountId: string;
+      readonly candidates: ReadonlyArray<{
+        readonly gmailThreadId: string;
+        readonly messageId: string;
+      }>;
+    };
+    if (candidates.length === 0) return "No new inbox messages to review.";
+    let drafted = 0;
+    for (const { gmailThreadId, messageId } of candidates) {
+      if (messageId !== customerQuestion.messageId && messageId !== receipt.messageId) {
+        throw new Error("Unexpected inbox candidate in the fixture.");
+      }
+      const record = readResult(
+        await call("gmail_workspace_record_reply", {
+          accountId,
+          gmailThreadId,
+          messageId,
+          body:
+            messageId === receipt.messageId
+              ? null
+              : `Hi Jordan, we’ll check the date for order VT-204 and get back to you.\n\n${signoff}`,
+        }),
+      ) as { readonly recorded: boolean };
+      if (record.recorded && messageId === customerQuestion.messageId) drafted += 1;
+    }
+    return `Gmail check queued ${drafted} reply draft.`;
   });
   send({
     method: "session/update",
@@ -101,7 +147,7 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
         sessionUpdate: "agent_message_chunk",
         content: {
           type: "text",
-          text: `Saved ${result.title} from the Home Repo and Email playbook.`,
+          text: output,
         },
       },
     },

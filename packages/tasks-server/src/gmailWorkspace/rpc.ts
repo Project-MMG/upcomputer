@@ -1,4 +1,4 @@
-import { AuthOrchestrationReadScope } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, AuthOrchestrationReadScope } from "@t3tools/contracts";
 import {
   GMAIL_WORKSPACE_RPC_METHODS as M,
   GMAIL_WORKSPACE_RPC_NAMESPACE,
@@ -22,6 +22,7 @@ export const GMAIL_WORKSPACE_RPC_CONTRIBUTION = defineNamespacedRpcContribution(
     [M.layout]: AuthOrchestrationReadScope,
     [M.inbox]: AuthOrchestrationReadScope,
     [M.thread]: AuthOrchestrationReadScope,
+    [M.updateDraft]: AuthOrchestrationOperateScope,
   },
   handlers: () =>
     GmailWorkspaceRpcGroup.toLayer(
@@ -32,6 +33,8 @@ export const GMAIL_WORKSPACE_RPC_CONTRIBUTION = defineNamespacedRpcContribution(
           Effect.flatMap(GmailWorkspace, (workspace) => response(workspace.inbox(input))),
         [M.thread]: (input) =>
           Effect.flatMap(GmailWorkspace, (workspace) => response(workspace.thread(input))),
+        [M.updateDraft]: (input) =>
+          Effect.flatMap(GmailWorkspace, (workspace) => response(workspace.updateDraft(input))),
       }),
     ),
 });

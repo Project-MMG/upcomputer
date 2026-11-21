@@ -110,6 +110,14 @@ After the bot saves the layout, choose **Gmail inbox** in the chat. Open an emai
 thread. Ask the bot to rearrange the inbox and thread reader if you want a different layout. The
 saved layout opens again from the same chat.
 
+To check for mail in the background, ask the bot to set up a scheduled prompt in its own chat.
+Have the prompt read the bot's playbook, check the Gmail workspace, and draft replies for messages
+that need one. Enable it in **Settings → Scheduled prompts**.
+
+The inbox marks threads with a reply ready for review. Open a thread to read the draft, edit and
+save it, or dismiss it. The reply stays in Up.computer. Later checks keep the version you saved
+and remember which drafts you dismissed.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

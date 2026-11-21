@@ -2234,6 +2234,8 @@ it.live(
             "project_tool_read",
             "project_tool_write",
             "gmail_workspace_save",
+            "gmail_workspace_check",
+            "gmail_workspace_record_reply",
           ]),
         );
 

@@ -2,13 +2,19 @@ import { useGT } from "gt-react";
 import { ArrowLeftIcon, ArrowRightIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { GmailWorkspaceLayout, GmailWorkspaceTarget } from "@t3tools/tasks-contracts/v1";
+import {
+  GMAIL_WORKSPACE_RPC_METHODS,
+  type GmailWorkspaceLayout,
+  type GmailWorkspaceTarget,
+} from "@t3tools/tasks-contracts/v1";
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
+import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/extensionApi.ts";
 import { cn } from "../../../../apps/web/src/lib/utils.ts";
 import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useBots } from "../bots/botData.tsx";
 import { useRemoteData } from "../projectTools/remoteData.ts";
 import type { gmailWorkspaceApi } from "../rpc/gmailWorkspace.ts";
+import { GmailReplyDraft } from "./GmailReplyDraft.tsx";
 import { useGmailWorkspaceLayout } from "./GmailWorkspaceToolbar.tsx";
 
 type Api = ReturnType<typeof gmailWorkspaceApi>;
@@ -65,11 +71,16 @@ function InboxPage(props: {
   readonly pages: PageStack;
   readonly selectedThread: string | null;
   readonly onOpenThread: (id: string) => void;
+  readonly refreshKey: string;
+  readonly onRefresh: () => void;
 }) {
   const gt = useGT();
   const token = props.pages.token;
   const { api } = props;
-  const inbox = useRemoteData(useCallback(() => api.inbox(token), [api, token]));
+  const inbox = useRemoteData(
+    useCallback(() => api.inbox(token), [api, token]),
+    props.refreshKey,
+  );
   return (
     <>
       <div className="flex items-center justify-between gap-2 pb-2">
@@ -79,7 +90,7 @@ function InboxPage(props: {
           size="icon-sm"
           aria-label={gt("Refresh inbox")}
           disabled={inbox.loading}
-          onClick={inbox.refresh}
+          onClick={props.onRefresh}
         >
           <RefreshCwIcon aria-hidden />
         </Button>
@@ -118,6 +129,9 @@ function InboxPage(props: {
                       {thread.preview}
                     </span>
                   ) : null}
+                  {thread.pendingReply ? (
+                    <span className="block pt-0.5 text-xs font-medium">{gt("Draft ready")}</span>
+                  ) : null}
                 </span>
               </button>
             </li>
@@ -129,19 +143,27 @@ function InboxPage(props: {
   );
 }
 
+type ThreadReaderProps = {
+  readonly api: Api;
+  readonly threadId: string;
+  readonly refreshKey: string;
+  readonly canWrite: boolean;
+  readonly onRefresh: () => void;
+};
+
 function ThreadPage({
   api,
   threadId,
   pages,
-}: {
-  readonly api: Api;
-  readonly threadId: string;
-  readonly pages: PageStack;
-}) {
+  refreshKey,
+  canWrite,
+  onRefresh,
+}: ThreadReaderProps & { readonly pages: PageStack }) {
   const gt = useGT();
   const token = pages.token;
   const thread = useRemoteData(
     useCallback(() => api.thread(threadId, token), [api, threadId, token]),
+    refreshKey,
   );
   if (thread.error) {
     return (
@@ -161,7 +183,7 @@ function ThreadPage({
         <PaneStatus>{gt("No messages on this page.")}</PaneStatus>
       ) : (
         <div className="divide-y divide-border/60 rounded-md border border-border">
-          {thread.data.messages.map((message) => (
+          {thread.data.messages.map(({ draft, ...message }) => (
             <article key={message.messageId} className="min-w-0 space-y-2 p-3">
               <h4 className="text-sm font-medium wrap-anywhere">
                 {message.subject || gt("(No subject)")}
@@ -180,6 +202,23 @@ function ThreadPage({
               <p className="text-sm wrap-anywhere whitespace-pre-wrap select-text">
                 {message.body || gt("No message text available.")}
               </p>
+              {draft ? (
+                <GmailReplyDraft
+                  key={draft.id}
+                  draft={draft}
+                  canWrite={canWrite}
+                  onUpdate={async (revision, change) => {
+                    const updated = await api.updateDraft({
+                      gmailThreadId: threadId,
+                      draftId: draft.id,
+                      revision,
+                      change,
+                    });
+                    onRefresh();
+                    return updated;
+                  }}
+                />
+              ) : null}
             </article>
           ))}
         </div>
@@ -189,15 +228,28 @@ function ThreadPage({
   );
 }
 
-function ThreadReader({ api, threadId }: { readonly api: Api; readonly threadId: string }) {
+function ThreadReader(props: ThreadReaderProps) {
   const pages = usePageStack();
-  return <ThreadPage key={pages.token ?? ""} api={api} threadId={threadId} pages={pages} />;
+  return <ThreadPage key={pages.token ?? ""} {...props} pages={pages} />;
 }
 
-function Workspace({ api, layout }: { readonly api: Api; readonly layout: GmailWorkspaceLayout }) {
+function Workspace({
+  api,
+  layout,
+  completedAt,
+  canWrite,
+}: {
+  readonly api: Api;
+  readonly layout: GmailWorkspaceLayout;
+  readonly completedAt: string | null | undefined;
+  readonly canWrite: boolean;
+}) {
   const gt = useGT();
   const pages = usePageStack();
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
+  const [revision, setRevision] = useState(0);
+  const refresh = () => setRevision((current) => current + 1);
+  const refreshKey = `${completedAt ?? ""}:${revision}`;
   const order =
     layout.order === "inbox-first"
       ? (["inbox", "thread"] as const)
@@ -218,6 +270,8 @@ function Workspace({ api, layout }: { readonly api: Api; readonly layout: GmailW
                 pages={pages}
                 selectedThread={selectedThread}
                 onOpenThread={setSelectedThread}
+                refreshKey={refreshKey}
+                onRefresh={refresh}
               />
             </section>
           ) : (
@@ -230,7 +284,14 @@ function Workspace({ api, layout }: { readonly api: Api; readonly layout: GmailW
               {selectedThread === null ? (
                 <PaneStatus>{gt("Select an email to read its thread.")}</PaneStatus>
               ) : (
-                <ThreadReader key={selectedThread} api={api} threadId={selectedThread} />
+                <ThreadReader
+                  key={selectedThread}
+                  api={api}
+                  threadId={selectedThread}
+                  refreshKey={refreshKey}
+                  canWrite={canWrite}
+                  onRefresh={refresh}
+                />
               )}
             </section>
           ),
@@ -248,12 +309,16 @@ function SavedWorkspace({
   readonly target: GmailWorkspaceTarget;
 }) {
   const gt = useGT();
-  const { api, layout } = useGmailWorkspaceLayout(environmentId, target);
+  const { api, layout, refreshKey } = useGmailWorkspaceLayout(environmentId, target);
+  const canWrite = useExperimentalFeatureRpcPermission(
+    environmentId,
+    GMAIL_WORKSPACE_RPC_METHODS.updateDraft,
+  );
   if (layout.error) return <PaneStatus error>{layout.error}</PaneStatus>;
   if (layout.data === undefined) return <PaneStatus>{gt("Loading Gmail workspace…")}</PaneStatus>;
   if (layout.data === null)
     return <PaneStatus>{gt("Ask this bot to create a Gmail workspace.")}</PaneStatus>;
-  return <Workspace api={api} layout={layout.data} />;
+  return <Workspace api={api} layout={layout.data} completedAt={refreshKey} canWrite={canWrite} />;
 }
 
 export default function GmailWorkspacePanel({

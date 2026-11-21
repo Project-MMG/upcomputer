@@ -184,11 +184,19 @@ describe("command permissions", () => {
     { method: "upcomputer.project-tools.v1.connection", scope: AuthSettingsWriteScope },
     { method: "upcomputer.project-tools.v1.appGrant", scope: AuthSettingsWriteScope },
     { method: "upcomputer.project-tools.v1.grant", scope: AuthSettingsWriteScope },
+    { method: "upcomputer.gmail-workspace.v1.updateDraft", scope: AuthOrchestrationOperateScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.gen(function* () {
       const registry = yield* setup;
       const command = createCommandPermissions(runtime, method);
-      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      const otherScope =
+        scope === AuthOrchestrationOperateScope
+          ? AuthOrchestrationReadScope
+          : AuthOrchestrationOperateScope;
+      registry.set(
+        sessions(env),
+        AsyncResult.success({ ...grant(false), scopes: [otherScope], permissions: [otherScope] }),
+      );
       expect(registry.get(command.permissionAtom(env))).toBe(false);
       expect((yield* command.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
         "EnvironmentAuthorizationError",

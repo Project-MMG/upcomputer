@@ -127,6 +127,8 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
   });
   return {
     saveWorkspace: (args: Schema.JsonObject) => call("gmail_workspace_save", args),
+    checkWorkspace: () => call("gmail_workspace_check", {}),
+    recordReply: (args: Schema.JsonObject) => call("gmail_workspace_record_reply", args),
     read: (slug: string, args: Schema.JsonObject = {}) =>
       call("project_tool_read", { slug, arguments: args }),
     write: (slug: string, args: Schema.JsonObject = {}) =>
@@ -399,6 +401,67 @@ it.effect("saves and replaces a bot's Gmail layout and reads the project's conne
         arguments: { user_id: "me", thread_id: customerQuestion.threadId },
       }),
     ]);
+
+    shells.set(bot.threadId, shell);
+    const checked = content(yield* api.checkWorkspace());
+    expect(checked).toMatchObject({
+      accountId: account.id,
+      candidates: [
+        { gmailThreadId: customerQuestion.threadId, messageId: customerQuestion.messageId },
+        { gmailThreadId: receipt.threadId, messageId: receipt.messageId },
+      ],
+    });
+    const proposal = {
+      accountId: account.id,
+      gmailThreadId: customerQuestion.threadId,
+      messageId: customerQuestion.messageId,
+      body: "Thanks for your message.",
+    };
+    const original = yield* Effect.all([api.recordReply(proposal), api.recordReply(proposal)], {
+      concurrency: 2,
+    });
+    expect(original.map(content)).toEqual(
+      expect.arrayContaining([{ recorded: true }, { recorded: false }]),
+    );
+    const thread = { ...target, gmailThreadId: customerQuestion.threadId };
+    const draft = (yield* workspace.thread(thread)).messages.at(-1)?.draft;
+    if (!draft) return yield* Effect.die("Expected the message's pending draft.");
+    expect(draft).toMatchObject({
+      status: "pending",
+      recipient: "jordan@example.test",
+      body: proposal.body,
+      revision: 1,
+    });
+    const edit = { ...thread, draftId: draft.id, revision: draft.revision };
+    const body = "I’ll check the delivery date and follow up.\n";
+    expect(yield* workspace.updateDraft({ ...edit, change: { kind: "edit", body } })).toMatchObject(
+      {
+        body,
+        revision: 2,
+      },
+    );
+    expect(
+      (yield* Effect.flip(workspace.updateDraft({ ...edit, change: { kind: "dismiss" } }))).code,
+    ).toBe("workspace-draft-changed");
+    expect(content(yield* api.recordReply(proposal))).toEqual({ recorded: false });
+    expect((yield* workspace.thread(thread)).messages.at(-1)?.draft).toMatchObject({
+      status: "pending",
+      body,
+      revision: 2,
+    });
+    yield* tools.connection({ ...connection, operation: "start" });
+    Array.from(backend.accounts.values()).at(-1)!.status = "ACTIVE";
+    yield* tools.connection({ ...connection, operation: "finish" });
+    expect(
+      (yield* Effect.flip(
+        workspace.updateDraft({
+          ...edit,
+          revision: 2,
+          change: { kind: "dismiss" },
+        }),
+      )).code,
+    ).toBe("workspace-draft-changed");
+    expect(code(yield* api.recordReply(proposal))).toBe("workspace-account-changed");
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -445,12 +508,14 @@ it.effect("rejects mismatched bot chats, revoked Gmail access and conflicting fi
       fixedInputs: {},
     } as const;
     expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("not-assigned");
+    expect(code(yield* api.checkWorkspace())).toBe("not-assigned");
     yield* tools.grant({
       ...grant,
       slug: gmailListAction,
       fixedInputs: { user_id: "different@example.test" },
     });
     expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("workspace-input-conflict");
+    expect(code(yield* api.checkWorkspace())).toBe("workspace-input-conflict");
     yield* tools.grant({
       ...grant,
       slug: gmailThreadAction,
@@ -462,6 +527,16 @@ it.effect("rejects mismatched bot chats, revoked Gmail access and conflicting fi
       )).code,
     ).toBe("workspace-input-conflict");
     yield* tools.grant({ ...grant, slug: gmailListAction });
+    const decision = {
+      accountId: account.id,
+      gmailThreadId: customerQuestion.threadId,
+      messageId: customerQuestion.messageId,
+      body: "A fixture reply.",
+    };
+    expect(code(yield* api.recordReply(decision))).toBe("workspace-input-conflict");
+    shells.set(bot.threadId, { ...shell, interactionMode: "plan" });
+    expect(code(yield* api.recordReply(decision))).toBe("plan-mode");
+    shells.set(bot.threadId, shell);
     yield* tools.grant({ ...grant, slug: gmailListAction, audience: null });
     expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("not-assigned");
     yield* tools.grant({ ...grant, slug: gmailListAction });

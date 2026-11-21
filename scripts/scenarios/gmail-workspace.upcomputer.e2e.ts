@@ -1,19 +1,24 @@
 import * as NodeWS from "@effect/platform-node/NodeWS";
+import type * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION,
   OrchestrationV2ShellSnapshot,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ScheduledTaskId,
+  type ThreadId,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { expect } from "e2e";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { RpcClient, RpcSerialization } from "effect/rpc";
 import { Socket } from "effect/socket";
@@ -26,6 +31,7 @@ import {
 } from "@t3tools/tasks-contracts/v1";
 import {
   customerQuestion,
+  gmailFixtureDeliveryFile,
   gmailFixtureKey,
   gmailListAction,
   gmailThreadAction,
@@ -34,14 +40,9 @@ import {
 import { T3_HOME } from "../e2e.config.ts";
 import { makeState, runPromise, test, WEB } from "./t3.ts";
 
-const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* (origin: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const secrets = path.join(T3_HOME, "userdata", "secrets");
-  yield* fs.makeDirectory(secrets, { recursive: true, mode: 0o700 });
-  yield* fs.writeFileString(path.join(secrets, "composio-api-key.bin"), gmailFixtureKey, {
-    mode: 0o600,
-  });
+const modelSelection = { instanceId: ProviderInstanceId.make("gmailFixture"), model: "workspace" };
+
+const gmailScenarioClient = Effect.fn("GmailWorkspaceScenario.client")(function* (origin: string) {
   const { cli } = makeState(T3_HOME);
   const issued = yield* cli(["auth", "session", "issue", "--token-only"]);
   const token = issued.stdout.trim().split("\n").at(-1) ?? "";
@@ -79,12 +80,23 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
   const client = yield* RpcClient.make(WsRpcGroup.merge(BotsRpcGroup, ProjectToolsRpcGroup)).pipe(
     Effect.provideContext(yield* Layer.build(protocol)),
   );
-  const instanceId = ProviderInstanceId.make("gmailFixture");
+  return { client, projectId: project.id };
+});
+
+const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* (origin: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const secrets = path.join(T3_HOME, "userdata", "secrets");
+  yield* fs.makeDirectory(secrets, { recursive: true, mode: 0o700 });
+  yield* fs.writeFileString(path.join(secrets, "composio-api-key.bin"), gmailFixtureKey, {
+    mode: 0o600,
+  });
+  const { client, projectId } = yield* gmailScenarioClient(origin);
   yield* client[WS_METHODS.serverUpdateSettings]({
     patch: {},
     providerInstanceMutation: {
       operation: "upsert",
-      instanceId,
+      instanceId: modelSelection.instanceId,
       instance: {
         driver: ProviderDriverKind.make("acpRegistry"),
         displayName: "Gmail fixture (scripted)",
@@ -102,23 +114,23 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
   });
   const bot = yield* client[BOTS_RPC_METHODS.save]({
     id: TaskAgentId.make("vt-email"),
-    projectId: project.id,
-    allowedProjectIds: [project.id],
+    projectId,
+    allowedProjectIds: [projectId],
     name: "Email",
     config: {
       role: "Email",
-      modelSelection: { instanceId, model: "workspace" },
+      modelSelection,
       runtimeMode: "approval-required",
       instructions:
         "Read AGENTS.md and bots/email/AGENTS.md at the start of chat and background runs. Use gmail_workspace_save when asked to create or revise the workspace.",
     },
   });
-  const connector = { projectId: project.id, app: "gmail" };
+  const connector = { projectId, app: "gmail" };
   yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "start" });
   yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "finish" });
   for (const slug of [gmailListAction, gmailThreadAction]) {
     yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
-      projectId: project.id,
+      projectId,
       slug,
       audience: { kind: "selected", botIds: [bot.agent.id] },
       fixedInputs: {},
@@ -127,19 +139,74 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
   return { threadId: bot.threadId };
 });
 
+const scheduleCheck = Effect.fn("GmailWorkspaceScenario.scheduleCheck")(function* (
+  origin: string,
+  threadId: ThreadId,
+) {
+  const { client, projectId } = yield* gmailScenarioClient(origin);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.writeFileString(path.join(T3_HOME, gmailFixtureDeliveryFile), "");
+  const now = yield* DateTime.now;
+  const { task } = yield* client[WS_METHODS.scheduledTasksUpsert]({
+    projectId,
+    threadId,
+    threadMode: "continue",
+    title: "Check VT's Gmail inbox",
+    prompt: "Read AGENTS.md and bots/email/AGENTS.md. Check the Gmail inbox for new mail.",
+    enabled: true,
+    schedule: { type: "once", runAt: DateTime.formatIso(DateTime.addDuration(now, 4_000)) },
+    workspaceStrategy: { type: "root" },
+    modelSelection,
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+  });
+  return task.id;
+});
+
+const runCheck = Effect.fn("GmailWorkspaceScenario.runCheck")(function* (
+  origin: string,
+  id: ScheduledTaskId,
+) {
+  const { client } = yield* gmailScenarioClient(origin);
+  yield* client[WS_METHODS.scheduledTasksRunNow]({ id });
+});
+
+const changeAccess = Effect.fn("GmailWorkspaceScenario.changeAccess")(function* (
+  origin: string,
+  change: "revoke" | "replace-account",
+) {
+  const { client, projectId } = yield* gmailScenarioClient(origin);
+  const connector = { projectId, app: "gmail" };
+  const list = { projectId, slug: gmailListAction, fixedInputs: {} };
+  if (change === "revoke") {
+    yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({ ...list, audience: null });
+    return;
+  }
+  yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "start" });
+  yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "finish" });
+  yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
+    ...list,
+    audience: { kind: "selected", botIds: [TaskAgentId.make("vt-email")] },
+  });
+});
+
+const runFixture = <A, E>(
+  work: Effect.Effect<A, E, NodeServices.NodeServices | HttpClient.HttpClient | Scope.Scope>,
+) => runPromise(work.pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)));
+
 test(
-  "The Email bot builds, revises and reopens its Gmail inbox",
+  "The Email bot queues and preserves Gmail replies in its saved inbox",
   WEB,
   async ({ t3, app, browser, screen }) => {
     await t3.project("VT Home Repo", {
       "AGENTS.md":
-        "# VT Home Repo\n\nUse the VT prefix for internal workspaces.\n\nWorkspace title prefix: VT\n",
+        "# VT Home Repo\n\nUse the VT prefix for internal workspaces.\n\nWorkspace title prefix: VT\nSign-off: The VT team\n",
       "bots/email/AGENTS.md":
-        "# Email bot\n\nRead shared AGENTS.md before acting. Use gmail_workspace_save for workspace changes.\n\nCreate: Inbox (inbox-first)\nRevise: Customer Mail (thread-first)\n",
+        "# Email bot\n\nRead shared AGENTS.md before acting. Use gmail_workspace_save for workspace changes.\n\nCreate: Inbox (inbox-first)\nRevise: Customer Mail (thread-first)\nReview with: gmail_workspace_check\nDraft for customer questions and record receipts as requiring no reply. Use the shared sign-off.\n",
     });
-    const thread = await runPromise(
-      seedEmailBot(app.baseUrl ?? "").pipe(Effect.provide(FetchHttpClient.layer), Effect.scoped),
-    );
+    const origin = app.baseUrl ?? "";
+    const thread = await runFixture(seedEmailBot(origin));
     await t3.open(thread);
 
     const opener = screen.getByRole("button", "Open Gmail inbox");
@@ -154,9 +221,18 @@ test(
     await expect(opener).toBeVisible();
     await opener.tap();
     await expect(screen.getByRole("heading", "VT Inbox")).toBeVisible();
-    await expect(screen.getByRole("button", receipt.subject, { exact: false })).toBeVisible();
-    await screen.getByRole("button", customerQuestion.subject, { exact: false }).tap();
-    await expect(screen.getByText(customerQuestion.messageText)).toBeVisible();
+    const questionRow = screen.getByRole("button", customerQuestion.subject, { exact: false });
+    const receiptRow = screen.getByRole("button", receipt.subject, { exact: false });
+    const draft = screen.getByRole("heading", "Reply draft");
+    const draftReady = screen.getByText("Draft ready");
+    const dismissed = screen.getByText("Draft dismissed");
+    const noNewMail = screen.getByText("No new inbox messages to review.");
+    const draftText = screen.getByText("Hi Jordan, we’ll check the date for order VT-204", {
+      exact: false,
+    });
+    await expect(receiptRow).toBeVisible();
+    await questionRow.tap();
+    await expect(screen.getByText(customerQuestion.messageText)).toBeHidden();
     expect(await controls()).toEqual(["inbox", "thread"]);
     await app.screenshot("created-inbox");
 
@@ -164,17 +240,69 @@ test(
     await composer.press("Enter");
     await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
     expect(await controls()).toEqual(["thread", "inbox"]);
-    await expect(screen.getByText(customerQuestion.messageText)).toBeVisible();
+    await expect(draft).toBeHidden();
     await app.screenshot("revised-inbox");
 
-    await screen.getByRole("button", "Close Gmail inbox").tap();
-    await expect(screen.getByRole("heading", "VT Customer Mail")).toBeHidden();
-    await browser.reload();
-    await opener.tap();
+    const scheduleId = await runFixture(scheduleCheck(origin, thread.threadId));
+    await expect(screen.getByText("Gmail check queued 1 reply draft.")).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(screen.getByText(customerQuestion.messageText)).toBeVisible();
+    await expect(draftReady).toHaveCount(1);
+    await expect(draft).toHaveCount(1);
+    await expect(screen.getByText("To jordan@example.test")).toBeVisible();
+    await expect(draftText).toBeVisible();
+    await app.screenshot("queued-reply");
+    await receiptRow.tap();
+    await expect(screen.getByText(receipt.messageText)).toBeVisible();
+    await expect(draft).toBeHidden();
+
+    await questionRow.tap();
+    await screen.getByRole("button", "Edit draft").tap();
+    const edited = "Hi Jordan, I’ll verify the delivery date and follow up this afternoon.";
+    await screen.getByRole("textbox", "Reply text").fill(edited);
+    await screen.getByRole("button", "Save draft").tap();
+    await expect(screen.getByText(edited)).toBeVisible();
+    await runFixture(runCheck(origin, scheduleId));
+    await expect(noNewMail).toHaveCount(1);
+
+    const reopen = async () => {
+      await screen.getByRole("button", "Close Gmail inbox").tap();
+      await expect(screen.getByRole("heading", "VT Customer Mail")).toBeHidden();
+      await browser.reload();
+      await opener.tap();
+      await questionRow.tap();
+    };
+    await reopen();
     await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
     expect(await controls()).toEqual(["thread", "inbox"]);
-    await screen.getByRole("button", receipt.subject, { exact: false }).tap();
-    await expect(screen.getByText(receipt.messageText)).toBeVisible();
-    await app.screenshot("reopened-inbox");
+    await expect(screen.getByText(edited)).toBeVisible();
+    await app.screenshot("reopened-edited-draft");
+    await screen.getByRole("button", "Dismiss draft").tap();
+    await expect(dismissed).toBeVisible();
+    await expect(draftReady).toBeHidden();
+    await runFixture(runCheck(origin, scheduleId));
+    await expect(noNewMail).toHaveCount(2);
+    await reopen();
+    await expect(dismissed).toBeVisible();
+    await expect(draft).toBeHidden();
+    await app.screenshot("reopened-dismissed-draft");
+
+    await runFixture(changeAccess(origin, "revoke"));
+    await runFixture(runCheck(origin, scheduleId));
+    await expect(screen.getByText("Gmail check blocked by not-assigned.")).toBeVisible();
+    await expect(
+      screen.getByText("This action is unavailable to this bot in its current project."),
+    ).toBeVisible();
+    await expect(draft).toBeHidden();
+    await app.screenshot("blocked-check");
+
+    await runFixture(changeAccess(origin, "replace-account"));
+    await runFixture(runCheck(origin, scheduleId));
+    await expect(draftReady).toHaveCount(1);
+    await expect(draftText).toBeVisible();
+    await expect(dismissed).toBeHidden();
+    await expect(screen.getByText(edited)).toBeHidden();
+    await app.screenshot("replacement-account");
   },
 );

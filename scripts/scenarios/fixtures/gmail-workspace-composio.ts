@@ -1,8 +1,11 @@
-// @effect-diagnostics globalFetch:off - Loaded before the scenario server to replace its outbound Composio calls.
+// @effect-diagnostics nodeBuiltinImport:off globalFetch:off - Standalone preload for the isolated scenario server.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import {
   gmailActionData,
   gmailActions,
   gmailApp,
+  gmailFixtureDeliveryFile,
   gmailFixtureKey,
 } from "./gmail-workspace-data.ts";
 
@@ -19,12 +22,12 @@ const accounts = new Map<string, string>();
 const realFetch = globalThis.fetch;
 let sequence = 0;
 
-// The scenario starts a separate server. Only its fixture key selects these responses.
 globalThis.fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.origin !== "https://backend.composio.dev") return realFetch(input, init);
   const request = new Request(input, init);
-  if (request.headers.get("x-api-key") !== gmailFixtureKey) return realFetch(request);
+  if (request.headers.get("x-api-key") !== gmailFixtureKey)
+    return new Response(null, { status: 401 });
   const path = url.pathname.replace(/^\/api\/v3\.1/, "");
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const notFound = () => json({ error: "No matching fixture route" }, 404);
@@ -52,6 +55,10 @@ globalThis.fetch = async (input, init) => {
             ]
           : [],
     });
+  }
+  if (path.startsWith("/connected_accounts/") && request.method === "DELETE") {
+    const id = path.slice("/connected_accounts/".length);
+    return accounts.delete(id) ? json({ deleted: true }) : notFound();
   }
   if (path === "/tool_router/session" && request.method === "POST") {
     const session = (await request.json()) as Session;
@@ -87,7 +94,12 @@ globalThis.fetch = async (input, init) => {
       call.arguments.user_id !== "me"
     )
       return json({ result_type: "failed" });
-    const data = gmailActionData(call.tool_slug, call.arguments.thread_id);
+    const home = process.env.T3CODE_HOME;
+    const data = gmailActionData(
+      call.tool_slug,
+      call.arguments.thread_id,
+      !!home && NodeFS.existsSync(NodePath.join(home, gmailFixtureDeliveryFile)),
+    );
     if (data) return json({ result_type: "completed", data });
   }
   return notFound();

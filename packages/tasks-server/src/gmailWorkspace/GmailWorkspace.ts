@@ -1,4 +1,8 @@
 import {
+  type GmailDraftUpdateInput,
+  type GmailInboxDecision,
+  GmailMessageId,
+  type GmailReplyDraft,
   GmailThreadId,
   GmailWorkspaceLayout,
   ProjectToolCursor,
@@ -12,6 +16,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
@@ -25,7 +30,7 @@ const storageError = (cause: unknown) =>
 
 const gmailText = Schema.optional(Schema.NullOr(Schema.String));
 const gmailMessage = Schema.Struct({
-  messageId: Schema.NonEmptyString,
+  messageId: GmailMessageId,
   threadId: Schema.optional(GmailThreadId),
   sender: gmailText,
   subject: gmailText,
@@ -35,11 +40,20 @@ const gmailMessage = Schema.Struct({
   messageTimestamp: gmailText,
   labelIds: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
 });
-const decodePage = Schema.decodeUnknownEffect(
-  Schema.Struct({
-    messages: Schema.optional(Schema.NullOr(Schema.Array(gmailMessage))),
-    nextPageToken: Schema.optional(Schema.NullOr(ProjectToolCursor)),
-  }),
+const gmailPage = Schema.Struct({
+  messages: Schema.optional(Schema.NullOr(Schema.Array(gmailMessage))),
+  nextPageToken: Schema.optional(Schema.NullOr(ProjectToolCursor)),
+});
+const gmailInboxMessage = gmailMessage.mapFields((fields) => ({
+  ...fields,
+  threadId: GmailThreadId,
+}));
+const decodeThread = Schema.decodeUnknownEffect(gmailPage);
+const decodeInbox = Schema.decodeUnknownEffect(
+  gmailPage.mapFields((fields) => ({
+    ...fields,
+    messages: Schema.optional(Schema.NullOr(Schema.Array(gmailInboxMessage))),
+  })),
 );
 const messageTime = (message: typeof gmailMessage.Type) =>
   Date.parse(message.messageTimestamp ?? "") || 0;
@@ -49,11 +63,49 @@ const nextPage = (next: string | null | undefined, current?: string) =>
 const invalidResponse = (cause: unknown) =>
   new ProjectToolError({ code: "composio-unavailable", cause });
 
+const inboxAction = (pageToken?: string) => ({
+  slug: "GMAIL_FETCH_EMAILS",
+  arguments: {
+    user_id: "me",
+    query: "in:inbox",
+    max_results: 30,
+    include_payload: false,
+    verbose: false,
+    ...(pageToken ? { page_token: pageToken } : {}),
+  },
+});
+const threadAction = (threadId: string, pageToken?: string) => ({
+  slug: "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
+  arguments: {
+    user_id: "me",
+    thread_id: threadId,
+    ...(pageToken ? { page_token: pageToken } : {}),
+  },
+});
+const replyAddress = (sender: string | null | undefined) => {
+  const from = sender?.trim() ?? "";
+  const address = /<([^<>]+)>$/u.exec(from)?.[1] ?? from;
+  return /^[^\s@<>,;]+@[^\s@<>,;]+$/u.test(address) ? address : null;
+};
+
+type Caller = McpInvocationContext["Service"];
+type InboxCheck = {
+  readonly accountId: string;
+  readonly candidates: ReadonlyArray<{
+    readonly gmailThreadId: string;
+    readonly messageId: string;
+    readonly subject: string;
+    readonly sender: string;
+    readonly preview: string;
+  }>;
+  readonly nextPageToken: string | null;
+};
+
 export class GmailWorkspace extends Context.Service<
   GmailWorkspace,
   {
     readonly save: (
-      caller: McpInvocationContext["Service"],
+      caller: Caller,
       layout: GmailWorkspaceLayout,
     ) => Effect.Effect<GmailWorkspaceLayout, ProjectToolError>;
     readonly layout: (
@@ -61,12 +113,24 @@ export class GmailWorkspace extends Context.Service<
     ) => Effect.Effect<GmailWorkspaceLayout | null, ProjectToolError>;
     readonly inbox: (input: GmailInboxInput) => Effect.Effect<GmailInboxPage, ProjectToolError>;
     readonly thread: (input: GmailThreadInput) => Effect.Effect<GmailThreadPage, ProjectToolError>;
+    readonly check: (
+      caller: Caller,
+      pageToken?: string,
+    ) => Effect.Effect<InboxCheck, ProjectToolError>;
+    readonly record: (
+      caller: Caller,
+      decision: typeof GmailInboxDecision.Type,
+    ) => Effect.Effect<{ readonly recorded: boolean }, ProjectToolError>;
+    readonly updateDraft: (
+      input: GmailDraftUpdateInput,
+    ) => Effect.Effect<GmailReplyDraft, ProjectToolError>;
   }
 >()("@t3tools/tasks-server/gmailWorkspace/GmailWorkspace") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tools = yield* ProjectTools;
+  const uuid = (yield* SecureRandom.SecureRandom).uuidV4();
 
   const layout = Effect.fn("GmailWorkspace.layout")(function* (target: GmailWorkspaceTarget) {
     yield* tools.confirmBotChat(target);
@@ -82,6 +146,80 @@ const make = Effect.gen(function* () {
     if ((yield* layout(target)) === null) {
       return yield* new ProjectToolError({ code: "workspace-unavailable" });
     }
+  });
+
+  const readInbox = Effect.fn("GmailWorkspace.readInbox")(function* (
+    caller: Caller | GmailWorkspaceTarget,
+    pageToken?: string,
+  ) {
+    const { data, accountId } = yield* tools.readConnectedBotAction(
+      caller,
+      "gmail",
+      inboxAction(pageToken),
+    );
+    const page = yield* decodeInbox(data).pipe(Effect.mapError(invalidResponse));
+    return {
+      accountId,
+      messages: (page.messages ?? []).toSorted((a, b) => messageTime(b) - messageTime(a)),
+      nextPageToken: nextPage(page.nextPageToken, pageToken),
+    };
+  });
+
+  const readThread = Effect.fn("GmailWorkspace.readThread")(function* (
+    caller: Caller | GmailWorkspaceTarget,
+    threadId: string,
+    pageToken?: string,
+    expectedAccountId?: string,
+  ) {
+    const { data, accountId } = yield* tools.readConnectedBotAction(
+      caller,
+      "gmail",
+      threadAction(threadId, pageToken),
+      expectedAccountId,
+    );
+    const page = yield* decodeThread(data).pipe(Effect.mapError(invalidResponse));
+    if (
+      !page.messages ||
+      page.messages.some(
+        (message) => message.threadId !== undefined && message.threadId !== threadId,
+      )
+    ) {
+      return yield* new ProjectToolError({ code: "composio-unavailable" });
+    }
+    return {
+      accountId,
+      messages: page.messages.toSorted((a, b) => messageTime(a) - messageTime(b)),
+      nextPageToken: page.nextPageToken || null,
+    };
+  });
+
+  const draftColumns = sql`id, status, revision, recipient, body`;
+  const replySource = Effect.fn("GmailWorkspace.replySource")(function* (
+    caller: Caller,
+    { accountId, gmailThreadId, messageId, body }: typeof GmailInboxDecision.Type,
+  ) {
+    const seenTokens = new Set<string>();
+    let token: string | undefined;
+    let message: typeof gmailMessage.Type | undefined;
+    let latest: typeof gmailMessage.Type | undefined;
+    while (true) {
+      const page = yield* readThread(caller, gmailThreadId, token, accountId);
+      message ??= page.messages.find((mail) => mail.messageId === messageId);
+      const newest = page.messages.findLast((mail) => !mail.labelIds?.includes("DRAFT"));
+      if (newest && (!latest || messageTime(newest) >= messageTime(latest))) latest = newest;
+      if ((message && body === null) || page.nextPageToken === null) break;
+      if (seenTokens.has(page.nextPageToken)) return yield* invalidResponse("Repeated Gmail page");
+      seenTokens.add(page.nextPageToken);
+      token = page.nextPageToken;
+    }
+    if (
+      !message?.labelIds?.includes("INBOX") ||
+      message.labelIds.includes("SENT") ||
+      (body !== null && latest?.messageId !== message.messageId)
+    ) {
+      return yield* new ProjectToolError({ code: "workspace-message-changed" });
+    }
+    return message;
   });
 
   return GmailWorkspace.of({
@@ -102,25 +240,10 @@ const make = Effect.gen(function* () {
     }),
     inbox: Effect.fn("GmailWorkspace.inbox")(function* (input) {
       yield* requireLayout(input);
-      const data = yield* tools.readConnectedBotAction(input, "gmail", {
-        slug: "GMAIL_FETCH_EMAILS",
-        arguments: {
-          user_id: "me",
-          query: "in:inbox",
-          max_results: 30,
-          include_payload: false,
-          verbose: false,
-          ...(input.pageToken ? { page_token: input.pageToken } : {}),
-        },
-      });
-      const page = yield* decodePage(data).pipe(Effect.mapError(invalidResponse));
+      const page = yield* readInbox(input, input.pageToken);
       const threads = new Map<string, GmailInboxPage["threads"][number]>();
-      for (const message of (page.messages ?? []).toSorted(
-        (a, b) => messageTime(b) - messageTime(a),
-      )) {
+      for (const message of page.messages) {
         const { threadId } = message;
-        if (threadId === undefined)
-          return yield* new ProjectToolError({ code: "composio-unavailable" });
         const existing = threads.get(threadId);
         const unread = message.labelIds?.includes("UNREAD") === true;
         if (existing) {
@@ -135,42 +258,145 @@ const make = Effect.gen(function* () {
           unread,
         });
       }
+      const pending = new Set<string>();
+      if (threads.size > 0) {
+        const rows = yield* sql<{ readonly threadId: string }>`
+          SELECT DISTINCT gmail_thread_id AS "threadId" FROM gmail_workspace_replies
+          WHERE project_id = ${input.projectId} AND bot_id = ${input.botId}
+            AND account_id = ${page.accountId} AND status = 'pending'
+            AND ${sql.in("gmail_thread_id", [...threads.keys()])}
+        `.pipe(Effect.mapError(storageError));
+        for (const row of rows) pending.add(row.threadId);
+      }
       return {
-        threads: [...threads.values()],
-        nextPageToken: nextPage(page.nextPageToken, input.pageToken),
+        threads: [...threads.values()].map((thread) =>
+          pending.has(thread.threadId) ? { ...thread, pendingReply: true as const } : thread,
+        ),
+        nextPageToken: page.nextPageToken,
       };
     }),
     thread: Effect.fn("GmailWorkspace.thread")(function* (input) {
       yield* requireLayout(input);
-      const data = yield* tools.readConnectedBotAction(input, "gmail", {
-        slug: "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-        arguments: {
-          user_id: "me",
-          thread_id: input.gmailThreadId,
-          ...(input.pageToken ? { page_token: input.pageToken } : {}),
-        },
-      });
-      const page = yield* decodePage(data).pipe(Effect.mapError(invalidResponse));
-      if (
-        !page.messages ||
-        page.messages.some(
-          ({ threadId }) => threadId !== undefined && threadId !== input.gmailThreadId,
-        )
-      ) {
-        return yield* new ProjectToolError({ code: "composio-unavailable" });
-      }
+      const page = yield* readThread(input, input.gmailThreadId, input.pageToken);
+      const { accountId, messages } = page;
+      const nextPageToken = nextPage(page.nextPageToken, input.pageToken);
+      if (messages.length === 0) return { messages: [], nextPageToken };
+      const rows = yield* sql<GmailReplyDraft & { readonly messageId: string }>`
+        SELECT ${draftColumns}, gmail_message_id AS "messageId"
+        FROM gmail_workspace_replies
+        WHERE project_id = ${input.projectId} AND bot_id = ${input.botId}
+          AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
+          AND status <> 'skipped' AND ${sql.in(
+            "gmail_message_id",
+            messages.map((mail) => mail.messageId),
+          )}
+      `.pipe(Effect.mapError(storageError));
+      const drafts = new Map(rows.map(({ messageId, ...draft }) => [messageId, draft]));
       return {
-        messages: page.messages
-          .toSorted((a, b) => messageTime(a) - messageTime(b))
-          .map((message) => ({
+        messages: messages.map((message) => {
+          const draft = drafts.get(message.messageId);
+          return {
             messageId: message.messageId,
             subject: message.subject ?? "",
             sender: message.sender ?? "",
             receivedAt: message.messageTimestamp ?? "",
             body: message.messageText || previewText(message),
-          })),
-        nextPageToken: nextPage(page.nextPageToken, input.pageToken),
+            ...(draft === undefined ? {} : { draft }),
+          };
+        }),
+        nextPageToken,
       };
+    }),
+    check: Effect.fn("GmailWorkspace.check")(function* (caller, pageToken) {
+      const owner = yield* tools.confirmCaller(caller);
+      yield* requireLayout(owner);
+      const { accountId, messages, nextPageToken } = yield* readInbox(caller, pageToken);
+      if ((yield* tools.confirmCaller(caller)).runId !== owner.runId) {
+        return yield* new ProjectToolError({ code: "policy-changed" });
+      }
+      const newest = new Map<string, (typeof gmailInboxMessage)["Type"]>();
+      for (const message of messages) {
+        if (!newest.has(message.threadId)) newest.set(message.threadId, message);
+      }
+      if (newest.size === 0) return { accountId, candidates: [], nextPageToken };
+      const recorded = yield* sql<{ readonly messageId: string }>`
+        SELECT gmail_message_id AS "messageId" FROM gmail_workspace_replies
+        WHERE project_id = ${owner.projectId} AND bot_id = ${owner.botId}
+          AND account_id = ${accountId}
+          AND ${sql.in(
+            "gmail_message_id",
+            [...newest.values()].map((mail) => mail.messageId),
+          )}
+      `.pipe(Effect.mapError(storageError));
+      const reviewed = new Set(recorded.map(({ messageId }) => messageId));
+      const candidates = [...newest.values()]
+        .filter(({ messageId }) => !reviewed.has(messageId))
+        .map((mail) => ({
+          gmailThreadId: mail.threadId,
+          messageId: mail.messageId,
+          subject: (mail.subject ?? "").slice(0, 256),
+          sender: (mail.sender ?? "").slice(0, 256),
+          preview: previewText(mail).slice(0, 1_000),
+        }));
+      return { accountId, candidates, nextPageToken };
+    }),
+    record: Effect.fn("GmailWorkspace.record")(function* (caller, decision) {
+      const owner = yield* tools.confirmCaller(caller);
+      if (owner.plan) return yield* new ProjectToolError({ code: "plan-mode" });
+      yield* requireLayout(owner);
+      const message = yield* replySource(caller, decision);
+      const { accountId, gmailThreadId, messageId, body } = decision;
+      const recipient = body === null ? null : replyAddress(message.sender);
+      if (body !== null && recipient === null) {
+        return yield* new ProjectToolError({ code: "workspace-recipient-unavailable" });
+      }
+      return yield* tools.withConnectedBotReadAccess(
+        caller,
+        "gmail",
+        [inboxAction(), threadAction(gmailThreadId)],
+        (currentAccountId) =>
+          Effect.gen(function* () {
+            const current = yield* tools.confirmCaller(caller);
+            if (current.runId !== owner.runId || current.plan) {
+              return yield* new ProjectToolError({ code: "policy-changed" });
+            }
+            if (currentAccountId !== accountId) {
+              return yield* new ProjectToolError({ code: "workspace-account-changed" });
+            }
+            const id = yield* uuid;
+            const rows = yield* sql`INSERT INTO gmail_workspace_replies (
+              id, project_id, bot_id, account_id, gmail_thread_id, gmail_message_id,
+              status, recipient, body
+            )
+            VALUES (${id}, ${owner.projectId}, ${owner.botId}, ${accountId},
+              ${gmailThreadId}, ${messageId}, ${body === null ? "skipped" : "pending"}, ${recipient}, ${body})
+            ON CONFLICT (project_id, bot_id, account_id, gmail_message_id) DO NOTHING
+            RETURNING id`.pipe(Effect.mapError(storageError));
+            return { recorded: rows.length > 0 };
+          }),
+      );
+    }),
+    updateDraft: Effect.fn("GmailWorkspace.updateDraft")(function* (input) {
+      yield* requireLayout(input);
+      return yield* tools.withConnectedBotReadAccess(
+        input,
+        "gmail",
+        [threadAction(input.gmailThreadId)],
+        (accountId) =>
+          Effect.gen(function* () {
+            const [draft] = yield* sql<GmailReplyDraft>`
+              UPDATE gmail_workspace_replies
+              SET ${input.change.kind === "edit" ? sql`body = ${input.change.body}` : sql`status = 'dismissed'`},
+                  revision = revision + 1
+              WHERE id = ${input.draftId} AND project_id = ${input.projectId} AND bot_id = ${input.botId}
+                AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
+                AND status = 'pending' AND revision = ${input.revision}
+              RETURNING ${draftColumns}
+            `.pipe(Effect.mapError(storageError));
+            if (!draft) return yield* new ProjectToolError({ code: "workspace-draft-changed" });
+            return draft;
+          }),
+      );
     }),
   });
 });

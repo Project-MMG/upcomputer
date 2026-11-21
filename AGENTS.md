@@ -1,21 +1,17 @@
 # Up.computer
 
-Up.computer is a GUI for coding agents built on upstream T3 Code (`pingdotgg/t3code`, git remote `upstream`). A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Pi, Antigravity, Kiro, fx) and serves the web and desktop clients. On top of upstream it adds tasks and task agents, bots, the planner, computer use, UpComputer Connect (our own relay deployment) and its own onboarding, look and telemetry.
+Project-MMG maintains this version of Up.computer for its own workflows. A Node WebSocket server runs coding agents and serves the web and desktop clients. The app includes chats, tasks, bots, the planner, computer use, and UpComputer Connect.
 
-## Living on upstream
+## Repository and product boundaries
 
-Most of this repository is upstream's code, and we sync it every few days. Every change here should keep the next sync cheap:
-
-- Put our features in our own packages and folders (`packages/tasks-*`, `packages/computer-use-*`, the product surface folders in `apps/web/src`), and our tests in `*.upcomputer.test.ts` files.
-- Hide upstream features instead of deleting them, and replace upstream UI through a product surface: [product flags](docs/internals/product-flags.md). A hook inside an upstream file stays a line or two.
-- Internal names stay upstream's: the `@t3tools/*` package scope, `T3CODE_*` variables, the `t3` MCP server and protocol names. Only what users see says Up.computer: [branding](docs/branding.md).
-- Syncing: [upstream sync](docs/operations/upstream-sync.md).
-
-What upstream cares about, we keep: performance without compromise (no needless websocket payloads, GPU-spiking animations or slow lists), remote readiness (local network, Tailscale, UpComputer Connect), and features that work on web and desktop. The mobile app is outside our workspace.
+- Use [Project-MMG/upcomputer](https://github.com/Project-MMG/upcomputer) for GitHub work. Verify the push URL of `origin` before the first write.
+- Use shared components and services for common behavior. Keep product differences in [product flags and surfaces](docs/internals/product-flags.md).
+- Preserve the `@t3tools/*` package scope, `T3CODE_*` variables, and `t3` protocol names for compatibility with installed clients and integrations. Follow the [branding guide](docs/branding.md) for user-facing names.
+- Verify web, desktop, and the applicable local and remote connection paths. Keep payloads small, lists responsive, and animations bounded. The mobile app is outside the current product scope.
 
 ## Principles
 
-From upstream's maintainer, and ours too: I like ambitious ideas, simple systems, and software that feels obvious. Do not preserve complexity just because it already exists. Do not introduce machinery because it looks architecturally impressive. Understand the real constraint, then fight for the smallest model that makes the correct behavior unsurprising.
+Prefer small systems with behavior users can predict. Find the constraint before choosing the design. Keep the interfaces, shared logic, and compatibility that existing callers rely on.
 
 Channel both "measure twice, cut once" and "yagni". Fight scope creep. Try to honor the dev's intent in both a minimal and realistic fashion.
 
@@ -50,7 +46,7 @@ We need to be on the same page with terminology. When communicating, use this la
 The most common defect in this repo is a change that works on the path you tested and is missing everywhere else. Before calling frontend work done, walk this list and say which entries applied:
 
 - **Entry points.** A behavior reachable from the chat view is usually also reachable from Settings, the command palette, and a keybinding. Fixing one is not fixing the feature.
-- **Clients.** Web and desktop (wraps web, adds Electron shell/IPC). Mobile is upstream's and outside our workspace. Shared logic lives in `packages/client-runtime`
+- **Clients.** Verify web and desktop. Desktop wraps web and adds Electron shell and IPC. Shared logic lives in `packages/client-runtime`.
 - **Providers.** Codex, Claude, Cursor, Grok, OpenCode, Antigravity, and Kiro each have an adapter. Provider-shaped features need a decision per adapter, even if the decision is "not supported here".
 - **Agents.** A capability a user can trigger is usually one an agent should reach through MCP tools, and scheduled tasks run the same paths. That only works when it is a service method, not handler code.
 - **Contracts.** Anything crossing the wire is typed in `packages/contracts`. Change the schema and the server, web, mobile, and desktop all follow.
@@ -118,16 +114,14 @@ The dev runner seeds a worktree's empty database from upstream's `~/.t3/userdata
 
 - Real agent turns cost money. To watch a turn stream through the pipeline and UI, use the free `Replay (dev)` provider that `vp run dev` registers; [test-t3-app](.agents/skills/test-t3-app/SKILL.md) shows how to start one. Use a real provider only when the change depends on that provider's behavior, and then pick its cheapest model, such as Haiku for Claude or Luna for Codex.
 
-## Pull requests
+## GitHub issues and pull requests
 
-- Never make a PR unless the developer explicitly asks you to do so.
-- `origin` is not always GitHub. Check `git remote get-url origin` before your first forge command and use that forge's CLI and skill. See [Forge mirror](docs/operations/development.md#forge-mirror-optional).
-- Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
-- Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
-- UI changes need before/after images. Motion or timing needs a short video.
-- Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
-- One request is one PR. Split it only when the maintainer asks. Outside contributions follow the stricter [one problem per PR](CONTRIBUTING.md#one-problem) rule.
-- When babysitting: call `watch_pull_request` and end your turn. Up.computer wakes you on checks, comments, or conflicts. Do not poll or sleep. Verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
+- Keep scope, acceptance criteria, and verification in the issue that owns the work. Link approved child issues and their blockers for features with multiple tickets. [MMG workflow](docs/agents/mmgmode.md)
+- Open PRs for work approved for GitHub. Use the repository's default branch or the integration branch named on the issue. Stack dependent PRs on the branch that contains their verified prerequisite.
+- Use conventional commit and PR titles such as `fix(web): keep new threads responsive`. Explain the problem, the change, and the verification. Link the issue and report the model and harness that did the work.
+- Attach before and after evidence for UI changes to the PR. Include a short video when it demonstrates interaction or motion.
+- Keep a PR focused on its linked issue. The maintainer approves merges and release rollouts. Mark an issue complete once its change reaches the intended branch and passes acceptance.
+- Use `watch_pull_request` when asked to monitor a PR in Up.computer. Verify bot findings against the source before acting on them.
 
 ## Documentation
 
@@ -145,7 +139,7 @@ Most code changes do not need an internal documentation change. Agents can read 
 ## Plans and work artifacts
 
 - Do not commit implementation plans, research notes, or agent scratch files. Keep temporary working material outside the worktree. `.plans/` is gitignored only as a safety net for legacy tooling.
-- Track active maintainer work in the GitHub issue or project item that owns it. External proposals follow `CONTRIBUTING.md` and belong in Ideas discussions.
+- Track active work in the GitHub issue that owns it. Use [the contribution guide](CONTRIBUTING.md) for bug reports and feature proposals.
 - A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.
 
 ## How it works
@@ -157,7 +151,7 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 ## Where code lives
 
 - `apps/server` - WebSocket, orchestration, providers, checkpointing. Effect-heavy: read [Effect services](docs/internals/effect-services.md) before adding server code, and `.repos/effect/LLMS.md` for the Effect library itself.
-- `apps/web` - React/Vite UI. `apps/desktop` wraps it, `apps/marketing` is the site. `apps/mobile` is upstream's React Native app, outside our workspace.
+- `apps/web` - React/Vite UI. `apps/desktop` wraps it, and `apps/marketing` is the site. `apps/mobile` contains the React Native reference client.
 - `packages/tasks-*` - tasks, task agents, bots and the planner. `packages/computer-use-*` - computer use. `infra/relay` - UpComputer Connect.
 - `packages/contracts` - Effect/Schema contracts plus small derived helpers. No heavy runtime logic.
 - `packages/shared` - shared runtime utils, subpath exports, no barrel.

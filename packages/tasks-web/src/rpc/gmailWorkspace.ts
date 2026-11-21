@@ -2,6 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import {
   GMAIL_WORKSPACE_RPC_METHODS as M,
   GmailWorkspaceRpcGroup,
+  type GmailDraftApprovalInput,
   type GmailDraftUpdateInput,
   type GmailWorkspaceTarget,
 } from "@t3tools/tasks-contracts/v1";
@@ -28,6 +29,15 @@ export function gmailWorkspaceApi(environmentId: EnvironmentId, target: GmailWor
         GmailWorkspaceRpcGroup,
         (client) => client[M.updateDraft](payload),
         { method: M.updateDraft, input: payload },
+      );
+    },
+    approveDraft: (input: Omit<GmailDraftApprovalInput, keyof GmailWorkspaceTarget>) => {
+      const payload = { ...target, ...input };
+      return requestExperimentalFeatureRpc(
+        environmentId,
+        GmailWorkspaceRpcGroup,
+        (client) => client[M.approveDraft](payload),
+        { method: M.approveDraft, input: payload },
       );
     },
   };

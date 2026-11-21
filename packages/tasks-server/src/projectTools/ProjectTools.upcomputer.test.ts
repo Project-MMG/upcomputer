@@ -3,14 +3,24 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  type AuthEnvironmentScope,
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthSessionId,
   EnvironmentId,
   ProjectId,
   RunId,
+  RpcScopeAuthorization,
   ScheduledTaskUpsertInput,
   ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
-import { TaskAgentId, TaskAgentRunId } from "@t3tools/tasks-contracts/v1";
+import {
+  GMAIL_WORKSPACE_RPC_METHODS,
+  GmailWorkspaceRpcGroup,
+  TaskAgentId,
+  TaskAgentRunId,
+} from "@t3tools/tasks-contracts/v1";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -19,8 +29,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
+import { RpcTest } from "effect/rpc";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerSettings from "../../../../apps/server/src/serverSettings.ts";
+import * as RpcAuthorization from "../../../../apps/server/src/auth/RpcAuthorization.ts";
 import * as BackgroundNotices from "../../../../apps/server/src/background/BackgroundNotices.ts";
 import * as ManagedPolicy from "../../../../apps/server/src/policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../../../../apps/server/src/project/ManagedProjectFolders.ts";
@@ -47,9 +60,11 @@ import { TaskAgentService } from "../agents/TaskAgentService.ts";
 import * as Bots from "../bots/BotService.ts";
 import * as GmailWorkspace from "../gmailWorkspace/GmailWorkspace.ts";
 import * as GmailWorkspaceMcp from "../gmailWorkspace/mcp.ts";
+import { GMAIL_WORKSPACE_RPC_CONTRIBUTION } from "../gmailWorkspace/rpc.ts";
 import {
   customerQuestion,
   gmailListAction,
+  gmailReplyAction,
   gmailThreadAction,
   receipt,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
@@ -241,7 +256,7 @@ const fixtureLayer = Layer.unwrap(
         Layer.provideMerge(botLayer),
       ),
       schedules,
-    ).pipe(Layer.provide(database), Layer.provideMerge(configuration));
+    ).pipe(Layer.provideMerge(database), Layer.provideMerge(configuration));
     const router = HttpRouter.serve(
       McpHttp.layerMcpTransport(Layer.merge(ProjectToolMcp.layer, GmailWorkspaceMcp.layer)).pipe(
         Layer.provide(services),
@@ -316,6 +331,78 @@ const code = (result: {
   expect(result.isError).toBe(true);
   return result.structuredContent?.code;
 };
+
+const approvalSession = AuthSessionId.make("gmail-reviewer");
+const approveMethod = GMAIL_WORKSPACE_RPC_METHODS.approveDraft;
+const gmailWorkspaceClient = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+  RpcTest.makeClient(GmailWorkspaceRpcGroup.middleware(RpcScopeAuthorization)).pipe(
+    Effect.provide(
+      Layer.merge(
+        GMAIL_WORKSPACE_RPC_CONTRIBUTION.handlers({ currentSessionId: approvalSession }),
+        RpcAuthorization.layer(
+          scopes,
+          new Map(Object.entries(GMAIL_WORKSPACE_RPC_CONTRIBUTION.requiredScopes)),
+        ),
+      ),
+    ),
+  );
+
+const connectGmail = Effect.fn("ProjectToolsTest.connectGmail")(function* (projectId: ProjectId) {
+  const tools = yield* ProjectTools.ProjectTools;
+  const { backend } = yield* Fixture;
+  const connection = { projectId, app: "gmail" };
+  yield* tools.connection({ ...connection, operation: "start" });
+  const account = Array.from(backend.accounts.values()).at(-1)!;
+  account.status = "ACTIVE";
+  account.label = "support@vt.example.test";
+  yield* tools.connection({ ...connection, operation: "finish" });
+  return account;
+});
+
+const queuedReply = Effect.fn("ProjectToolsTest.queuedReply")(function* () {
+  const tools = yield* ProjectTools.ProjectTools;
+  const workspace = yield* GmailWorkspace.GmailWorkspace;
+  const { authenticate, backend, enableComposio } = yield* Fixture;
+  enableComposio();
+  const bot = yield* addBot("Email", firstProject);
+  const mcp = yield* authenticate(bot.threadId);
+  const projectId = firstProject;
+  const account = yield* connectGmail(projectId);
+  const grant = {
+    projectId,
+    audience: { kind: "selected", botIds: [bot.agent.id] },
+    fixedInputs: {},
+  } as const;
+  for (const slug of [gmailListAction, gmailThreadAction, gmailReplyAction]) {
+    yield* tools.grant({ ...grant, slug });
+  }
+  const gmailThreadId = customerQuestion.threadId;
+  expect(
+    content(yield* mcp.saveWorkspace({ title: "VT Inbox", order: "inbox-first" })),
+  ).toBeTruthy();
+  expect(
+    content(
+      yield* mcp.recordReply({
+        accountId: account.id,
+        gmailThreadId,
+        messageId: customerQuestion.messageId,
+        body: "Thanks for your message.",
+      }),
+    ),
+  ).toEqual({ recorded: true });
+  const target = { projectId, botId: bot.agent.id, threadId: bot.threadId, gmailThreadId };
+  const review = yield* workspace.thread(target);
+  expect(review.sendingAccount).toBe(account.label);
+  const draft = review.messages.at(-1)?.draft;
+  if (!draft) return yield* Effect.die("Expected a queued Gmail reply.");
+  return {
+    account,
+    approval: { ...target, draftId: draft.id, revision: draft.revision },
+    grant: { ...grant, slug: gmailReplyAction },
+    mcp,
+    sends: () => backend.calls.filter((call) => call.slug === gmailReplyAction),
+  };
+});
 
 it.effect("saves and replaces a bot's Gmail layout and reads the project's connected inbox", () =>
   Effect.gen(function* () {
@@ -559,6 +646,148 @@ it.effect("rejects mismatched bot chats, revoked Gmail access and conflicting fi
   }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect(
+  "sends the authenticated review once when approvals race and gates direct Gmail writes",
+  () =>
+    Effect.gen(function* () {
+      const { account, approval, mcp, sends } = yield* queuedReply();
+      const { authenticate, backend } = yield* Fixture;
+      const tools = yield* ProjectTools.ProjectTools;
+      const workspace = yield* GmailWorkspace.GmailWorkspace;
+      const sql = yield* SqlClient.SqlClient;
+      const reader = yield* gmailWorkspaceClient([AuthOrchestrationReadScope]);
+      expect((yield* Effect.flip(reader[approveMethod](approval)))._tag).toBe(
+        "EnvironmentAuthorizationError",
+      );
+      const operator = yield* gmailWorkspaceClient([AuthOrchestrationOperateScope]);
+      const body = "I’ll confirm the delivery date.\n\nThanks,\nThe VT team\n";
+      const { revision } = yield* workspace.updateDraft({
+        ...approval,
+        change: { kind: "edit", body },
+      });
+      expect(yield* Effect.flip(operator[approveMethod](approval))).toMatchObject({
+        code: "workspace-draft-changed",
+      });
+      const request = { ...approval, revision };
+      const args = {
+        user_id: "me",
+        thread_id: customerQuestion.threadId,
+        recipient_email: "jordan@example.test",
+        message_body: body,
+        is_html: false,
+        include_signature: false,
+      };
+      expect(code(yield* mcp.write(gmailReplyAction, args))).toBe("workspace-approval-required");
+      yield* tools.grantApp({ projectId: firstProject, app: "gmail", audience: all });
+      yield* tools.grant({
+        projectId: firstProject,
+        slug: gmailReplyAction,
+        audience: null,
+        fixedInputs: {},
+      });
+      expect(code(yield* mcp.write(gmailReplyAction, args))).toBe("workspace-approval-required");
+      expect(
+        content(yield* mcp.search({ app: "gmail", query: "Reply to email thread" })),
+      ).toMatchObject({
+        actions: [],
+      });
+      expect(sends()).toEqual([]);
+      const gate = yield* backend.holdSession(gmailReplyAction);
+      const first = yield* operator[approveMethod](request).pipe(Effect.forkScoped);
+      yield* Deferred.await(gate.entered);
+      expect(yield* operator[approveMethod](request)).toBe("sent");
+      yield* Deferred.succeed(gate.proceed, undefined);
+      expect(yield* Fiber.join(first)).toBe("sent");
+      expect(yield* operator[approveMethod](request)).toBe("sent");
+      expect(sends()).toEqual([
+        {
+          userId: account.user_id,
+          account: account.id,
+          slug: gmailReplyAction,
+          arguments: args,
+        },
+      ]);
+      expect((yield* workspace.thread(approval)).messages.at(-1)?.draft).toMatchObject({
+        deliveryStatus: "sent",
+        body,
+        revision,
+      });
+      expect(
+        yield* sql`SELECT approval_session_id, gmail_message_id FROM gmail_workspace_reply_attempts`,
+      ).toEqual([{ approval_session_id: approvalSession, gmail_message_id: "19bf77729bcb3a99" }]);
+      const other = yield* addBot("Other Email", secondProject);
+      const otherAccount = yield* connectGmail(secondProject);
+      yield* tools.grantApp({ projectId: secondProject, app: "gmail", audience: all });
+      const otherMcp = yield* authenticate(other.threadId);
+      expect(content(yield* otherMcp.write(gmailReplyAction, args))).toHaveProperty(
+        "response_data",
+      );
+      expect(sends().map(({ account }) => account)).toEqual([account.id, otherAccount.id]);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("rechecks the Gmail approval grant and the reviewed account before sending", () =>
+  Effect.gen(function* () {
+    const { approval, grant, sends } = yield* queuedReply();
+    const tools = yield* ProjectTools.ProjectTools;
+    const { backend } = yield* Fixture;
+    const client = yield* gmailWorkspaceClient([AuthOrchestrationOperateScope]);
+    const approve = client[approveMethod](approval);
+    yield* tools.grant({ ...grant, fixedInputs: { cc: ["unreviewed@example.test"] } });
+    expect(yield* Effect.flip(approve)).toMatchObject({ code: "workspace-input-conflict" });
+    yield* tools.grant(grant);
+    const gate = yield* backend.holdSession(gmailReplyAction);
+    const inFlight = yield* approve.pipe(Effect.flip, Effect.forkScoped);
+    yield* Deferred.await(gate.entered);
+    yield* tools.grant({ ...grant, audience: null });
+    yield* Deferred.succeed(gate.proceed, undefined);
+    expect(yield* Fiber.join(inFlight)).toMatchObject({ code: "not-assigned" });
+    yield* tools.grant(grant);
+    const editingGate = yield* backend.holdSession(gmailReplyAction);
+    const stale = yield* approve.pipe(Effect.flip, Effect.forkScoped);
+    yield* Deferred.await(editingGate.entered);
+    const workspace = yield* GmailWorkspace.GmailWorkspace;
+    const edited = yield* workspace.updateDraft({
+      ...approval,
+      change: { kind: "edit", body: "Check the date and follow up." },
+    });
+    yield* Deferred.succeed(editingGate.proceed, undefined);
+    expect(yield* Fiber.join(stale)).toMatchObject({ code: "workspace-draft-changed" });
+    yield* connectGmail(firstProject);
+    expect(
+      yield* Effect.flip(client[approveMethod]({ ...approval, revision: edited.revision })),
+    ).toMatchObject({ code: "workspace-account-changed" });
+    expect(sends()).toEqual([]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("keeps uncertain delivery on the draft and blocks reapproval or edits", () =>
+  Effect.gen(function* () {
+    const { approval, sends } = yield* queuedReply();
+    const { backend } = yield* Fixture;
+    const workspace = yield* GmailWorkspace.GmailWorkspace;
+    const client = yield* gmailWorkspaceClient([AuthOrchestrationOperateScope]);
+    backend.failWrite(gmailReplyAction, 403);
+    expect(yield* client[approveMethod](approval)).toBe("failed");
+    expect(yield* client[approveMethod](approval)).toBe("failed");
+    expect(sends()).toHaveLength(1);
+    const change = { kind: "edit", body: "I’ll verify the delivery date this afternoon." } as const;
+    const revised = yield* workspace.updateDraft({ ...approval, change });
+    const request = { ...approval, revision: revised.revision };
+    backend.failWrite(gmailReplyAction);
+    expect(yield* client[approveMethod](request)).toBe("uncertain");
+    expect((yield* workspace.thread(approval)).messages.at(-1)?.draft).toMatchObject({
+      deliveryStatus: "uncertain",
+      revision: revised.revision,
+    });
+    expect(yield* client[approveMethod](request)).toBe("uncertain");
+    expect(yield* Effect.flip(workspace.updateDraft({ ...request, change }))).toMatchObject({
+      code: "workspace-draft-changed",
+    });
+    expect(sends()).toHaveLength(2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("searches the full paginated catalog and manages a verified project account", () =>
   Effect.gen(function* () {
     const tools = yield* ProjectTools.ProjectTools;
@@ -767,7 +996,7 @@ it.effect(
       expect(code(yield* api.read(read))).toBe("account-unavailable");
       account.status = "ACTIVE";
 
-      const gate = yield* backend.holdSession;
+      const gate = yield* backend.holdSession();
       const inFlight = yield* api
         .write(write, { note: "revoked during setup" })
         .pipe(Effect.forkScoped);
@@ -866,7 +1095,7 @@ it.effect("gives three bots full access, no access, and one action for the same 
       actions: [],
     });
     shells.set(full.threadId, shell);
-    const gate = yield* backend.holdSession;
+    const gate = yield* backend.holdSession();
     const inFlight = yield* fullApi
       .write(write, { repository: "org/allowed", note: "revoked" })
       .pipe(Effect.forkScoped);

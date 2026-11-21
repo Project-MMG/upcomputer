@@ -115,8 +115,13 @@ Have the prompt read the bot's playbook, check the Gmail workspace, and draft re
 that need one. Enable it in **Settings → Scheduled prompts**.
 
 The inbox marks threads with a reply ready for review. Open a thread to read the draft, edit and
-save it, or dismiss it. The reply stays in Up.computer. Later checks keep the version you saved
-and remember which drafts you dismissed. You can restore a dismissed draft from the same message.
+save it, or dismiss it. Later checks keep the version you saved and remember which drafts you
+dismissed. You can restore a dismissed draft from the same message.
+
+Assign **Reply to email thread** to let the workspace send replies you approve. Review the sending
+account, recipient, and saved reply in the thread, then choose **Approve & send**. If delivery is
+uncertain, check Sent in Gmail before sending another reply. A bot with a Gmail workspace uses
+this approval flow for Gmail writes.
 
 ## Bot status
 

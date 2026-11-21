@@ -1,7 +1,10 @@
+import type { AuthSessionId } from "@t3tools/contracts";
 import {
+  type GmailDraftApprovalInput,
   type GmailDraftUpdateInput,
   type GmailInboxDecision,
   GmailMessageId,
+  type GmailReplyDeliveryStatus,
   type GmailReplyDraft,
   GmailThreadId,
   GmailWorkspaceLayout,
@@ -16,6 +19,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -55,6 +59,10 @@ const decodeInbox = Schema.decodeUnknownEffect(
     messages: Schema.optional(Schema.NullOr(Schema.Array(gmailInboxMessage))),
   })),
 );
+const gmailSendReceipt = Schema.Struct({ id: GmailMessageId, threadId: GmailThreadId });
+const decodeSendReceipt = Schema.decodeUnknownOption(
+  Schema.Union([gmailSendReceipt, Schema.Struct({ response_data: gmailSendReceipt })]),
+);
 const messageTime = (message: typeof gmailMessage.Type) =>
   Date.parse(message.messageTimestamp ?? "") || 0;
 const previewText = (message: typeof gmailMessage.Type) => message.preview ?? message.snippet ?? "";
@@ -89,6 +97,10 @@ const replyAddress = (sender: string | null | undefined) => {
 };
 
 type Caller = McpInvocationContext["Service"];
+type ReplyToApprove = GmailReplyDraft & {
+  readonly accountId: string;
+  readonly messageId: string;
+};
 type InboxCheck = {
   readonly accountId: string;
   readonly candidates: ReadonlyArray<{
@@ -124,6 +136,10 @@ export class GmailWorkspace extends Context.Service<
     readonly updateDraft: (
       input: GmailDraftUpdateInput,
     ) => Effect.Effect<GmailReplyDraft, ProjectToolError>;
+    readonly approveDraft: (
+      approvalSessionId: AuthSessionId,
+      input: GmailDraftApprovalInput,
+    ) => Effect.Effect<GmailReplyDeliveryStatus, ProjectToolError>;
   }
 >()("@t3tools/tasks-server/gmailWorkspace/GmailWorkspace") {}
 
@@ -171,7 +187,7 @@ const make = Effect.gen(function* () {
     pageToken?: string,
     expectedAccountId?: string,
   ) {
-    const { data, accountId } = yield* tools.readConnectedBotAction(
+    const { data, accountId, accountLabel } = yield* tools.readConnectedBotAction(
       caller,
       "gmail",
       threadAction(threadId, pageToken),
@@ -188,14 +204,19 @@ const make = Effect.gen(function* () {
     }
     return {
       accountId,
+      accountLabel,
       messages: page.messages.toSorted((a, b) => messageTime(a) - messageTime(b)),
       nextPageToken: page.nextPageToken || null,
     };
   });
 
-  const draftColumns = sql`id, status, revision, recipient, body`;
+  const draftColumns = sql`draft.id, draft.status, draft.revision, draft.recipient, draft.body,
+    attempt.status AS "deliveryStatus"`;
+  const draftWithAttempt = sql`gmail_workspace_replies AS draft
+    LEFT JOIN gmail_workspace_reply_attempts AS attempt
+      ON attempt.draft_id = draft.id AND attempt.revision = draft.revision`;
   const replySource = Effect.fn("GmailWorkspace.replySource")(function* (
-    caller: Caller,
+    caller: Caller | GmailWorkspaceTarget,
     { accountId, gmailThreadId, messageId, body }: typeof GmailInboxDecision.Type,
   ) {
     const seenTokens = new Set<string>();
@@ -220,6 +241,20 @@ const make = Effect.gen(function* () {
       return yield* new ProjectToolError({ code: "workspace-message-changed" });
     }
     return message;
+  });
+
+  const loadReplyToApprove = Effect.fn("GmailWorkspace.loadReplyToApprove")(function* (
+    input: GmailDraftApprovalInput,
+  ) {
+    const [draft] = yield* sql<ReplyToApprove>`
+      SELECT ${draftColumns}, draft.account_id AS "accountId", draft.gmail_message_id AS "messageId"
+      FROM ${draftWithAttempt}
+      WHERE draft.id = ${input.draftId} AND draft.project_id = ${input.projectId}
+        AND draft.bot_id = ${input.botId} AND draft.gmail_thread_id = ${input.gmailThreadId}
+        AND draft.status = 'pending' AND draft.revision = ${input.revision}
+    `.pipe(Effect.mapError(storageError));
+    if (!draft) return yield* new ProjectToolError({ code: "workspace-draft-changed" });
+    return draft;
   });
 
   return GmailWorkspace.of({
@@ -265,6 +300,11 @@ const make = Effect.gen(function* () {
           WHERE project_id = ${input.projectId} AND bot_id = ${input.botId}
             AND account_id = ${page.accountId} AND status = 'pending'
             AND ${sql.in("gmail_thread_id", [...threads.keys()])}
+            AND NOT EXISTS (
+              SELECT 1 FROM gmail_workspace_reply_attempts AS attempt
+              WHERE attempt.draft_id = gmail_workspace_replies.id
+                AND attempt.revision = gmail_workspace_replies.revision
+            )
         `.pipe(Effect.mapError(storageError));
         for (const row of rows) pending.add(row.threadId);
       }
@@ -278,21 +318,20 @@ const make = Effect.gen(function* () {
     thread: Effect.fn("GmailWorkspace.thread")(function* (input) {
       yield* requireLayout(input);
       const page = yield* readThread(input, input.gmailThreadId, input.pageToken);
-      const { accountId, messages } = page;
+      const { accountId, accountLabel: sendingAccount, messages } = page;
       const nextPageToken = nextPage(page.nextPageToken, input.pageToken);
-      if (messages.length === 0) return { messages: [], nextPageToken };
+      if (messages.length === 0) return { sendingAccount, messages: [], nextPageToken };
       const rows = yield* sql<GmailReplyDraft & { readonly messageId: string }>`
-        SELECT ${draftColumns}, gmail_message_id AS "messageId"
-        FROM gmail_workspace_replies
-        WHERE project_id = ${input.projectId} AND bot_id = ${input.botId}
-          AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
-          AND status <> 'skipped' AND ${sql.in(
-            "gmail_message_id",
-            messages.map((mail) => mail.messageId),
-          )}
+        SELECT ${draftColumns}, draft.gmail_message_id AS "messageId"
+        FROM ${draftWithAttempt}
+        WHERE draft.project_id = ${input.projectId} AND draft.bot_id = ${input.botId}
+          AND draft.account_id = ${accountId} AND draft.gmail_thread_id = ${input.gmailThreadId}
+          AND draft.status <> 'skipped'
+          AND draft.gmail_message_id IN ${sql.in(messages.map((mail) => mail.messageId))}
       `.pipe(Effect.mapError(storageError));
       const drafts = new Map(rows.map(({ messageId, ...draft }) => [messageId, draft]));
       return {
+        sendingAccount,
         messages: messages.map((message) => {
           const draft = drafts.get(message.messageId);
           return {
@@ -395,11 +434,72 @@ const make = Effect.gen(function* () {
               WHERE id = ${input.draftId} AND project_id = ${input.projectId} AND bot_id = ${input.botId}
                 AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
                 AND status = ${currentStatus} AND revision = ${input.revision}
-              RETURNING ${draftColumns}
+                AND NOT EXISTS (
+                  SELECT 1 FROM gmail_workspace_reply_attempts AS attempt
+                  WHERE attempt.draft_id = gmail_workspace_replies.id
+                    AND attempt.revision = gmail_workspace_replies.revision
+                    AND (attempt.status <> 'failed' OR ${input.change.kind} <> 'edit')
+                )
+              RETURNING id, status, revision, recipient, body
             `.pipe(Effect.mapError(storageError));
             if (!draft) return yield* new ProjectToolError({ code: "workspace-draft-changed" });
             return draft;
           }),
+      );
+    }),
+    approveDraft: Effect.fn("GmailWorkspace.approveDraft")(function* (approvalSessionId, input) {
+      yield* requireLayout(input);
+      const draft = yield* loadReplyToApprove(input);
+      if (draft.deliveryStatus) return draft.deliveryStatus;
+      const { accountId, messageId, body, recipient } = draft;
+      const { gmailThreadId } = input;
+      const source = yield* replySource(input, { accountId, gmailThreadId, messageId, body });
+      if (replyAddress(source.sender) !== recipient) {
+        return yield* new ProjectToolError({ code: "workspace-message-changed" });
+      }
+      return yield* tools.sendApprovedGmailReply(
+        input,
+        { accountId, gmailThreadId, body, recipient },
+        Effect.fn("GmailWorkspace.attemptReply")(function* (execute) {
+          // An interrupted or unconfirmed send keeps this claim and cannot be retried.
+          const [claim] = yield* sql`
+            INSERT INTO gmail_workspace_reply_attempts (draft_id, revision, approval_session_id, status)
+            SELECT id, revision, ${approvalSessionId}, 'uncertain'
+            FROM gmail_workspace_replies
+            WHERE id = ${draft.id} AND revision = ${draft.revision} AND status = 'pending'
+            ON CONFLICT (draft_id, revision) DO NOTHING
+            RETURNING draft_id
+          `.pipe(Effect.mapError(storageError));
+          if (!claim) {
+            const current = yield* loadReplyToApprove(input);
+            if (current.deliveryStatus) return current.deliveryStatus;
+            return yield* new ProjectToolError({ code: "workspace-draft-changed" });
+          }
+          const outcome = yield* Effect.match(execute, {
+            onSuccess: (data) => {
+              const receipt = Option.getOrUndefined(decodeSendReceipt(data));
+              const message =
+                receipt && ("response_data" in receipt ? receipt.response_data : receipt);
+              return message?.threadId === gmailThreadId
+                ? ({ status: "sent", messageId: message.id } as const)
+                : ({ status: "uncertain", messageId: null } as const);
+            },
+            onFailure: ({ code, status }) => ({
+              status:
+                code === "action-outcome-unknown" || code === "action-failed" || status === 408
+                  ? ("uncertain" as const)
+                  : ("failed" as const),
+              messageId: null,
+            }),
+          });
+          if (outcome.status !== "uncertain") {
+            yield* sql`UPDATE gmail_workspace_reply_attempts
+              SET status = ${outcome.status}, gmail_message_id = ${outcome.messageId}
+              WHERE draft_id = ${draft.id} AND revision = ${draft.revision}
+            `.pipe(Effect.mapError(storageError));
+          }
+          return outcome.status;
+        }),
       );
     }),
   });

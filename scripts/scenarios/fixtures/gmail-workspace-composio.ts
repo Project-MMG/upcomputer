@@ -7,6 +7,9 @@ import {
   gmailApp,
   gmailFixtureDeliveryFile,
   gmailFixtureKey,
+  gmailFixtureSender,
+  gmailFixtureSendLog,
+  gmailReplyAction,
 } from "./gmail-workspace-data.ts";
 
 interface Session {
@@ -50,7 +53,7 @@ globalThis.fetch = async (input, init) => {
                 user_id: user,
                 toolkit: { slug: "gmail" },
                 status: "ACTIVE",
-                alias: "VT fixture inbox",
+                alias: gmailFixtureSender,
               },
             ]
           : [],
@@ -100,6 +103,14 @@ globalThis.fetch = async (input, init) => {
       call.arguments.thread_id,
       !!home && NodeFS.existsSync(NodePath.join(home, gmailFixtureDeliveryFile)),
     );
+    if (data && call.tool_slug === gmailReplyAction) {
+      if (!home) return json({ result_type: "failed" });
+      NodeFS.appendFileSync(
+        NodePath.join(home, gmailFixtureSendLog),
+        `${JSON.stringify({ account, ...call })}\n`,
+        { mode: 0o600 },
+      );
+    }
     if (data) return json({ result_type: "completed", data });
   }
   return notFound();

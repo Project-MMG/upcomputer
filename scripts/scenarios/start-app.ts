@@ -155,6 +155,12 @@ const startApp = Effect.fn("startApp")(function* (input: {
       args: devRunner("dev:server", ports),
       env: {
         ...webEnv,
+        NODE_OPTIONS: [
+          hostEnvironment.NODE_OPTIONS,
+          `--import=${new URL("./fixtures/gmail-workspace-composio.ts", import.meta.url).href}`,
+        ]
+          .filter(Boolean)
+          .join(" "),
         T3CODE_DEV_ALLOWED_ORIGINS: origin,
         // Makes the startup pairing link reusable, so every test can sign in with it.
         T3CODE_DEV_AUTH_TOKEN: `${token}${token}`.replaceAll("-", ""),

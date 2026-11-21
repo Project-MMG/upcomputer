@@ -2469,6 +2469,9 @@ importers:
       '@t3tools/tailscale':
         specifier: workspace:*
         version: link:../packages/tailscale
+      '@t3tools/tasks-contracts':
+        specifier: workspace:*
+        version: link:../packages/tasks-contracts
       agent-device:
         specifier: 0.21.36
         version: 0.21.36

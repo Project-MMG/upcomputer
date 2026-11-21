@@ -98,15 +98,14 @@ export interface ExperimentalWebRightPanelSurfaceProps {
 }
 
 /**
- * A surface in the right panel beside a thread: an entry in the panel's
- * launcher and "+" menu, and at most one tab per thread.
+ * A surface in the right panel beside a thread, with at most one tab per thread.
  */
 export interface ExperimentalWebRightPanelSurfaceContribution {
   readonly id: string;
-  /** The launcher entry and the tab title. */
+  /** The tab title and any launcher entry. */
   readonly label: string;
-  /** One letter that opens the surface from the launcher; core's letters are taken. */
-  readonly shortcut: string;
+  /** A launcher entry and shortcut. Omit when a feature supplies its own opener. */
+  readonly shortcut?: string;
   readonly icon: ComponentType<{ readonly className?: string }>;
   readonly load: () => Promise<{
     readonly default: ComponentType<ExperimentalWebRightPanelSurfaceProps>;
@@ -128,6 +127,8 @@ export interface ExperimentalWebFeatureContribution {
   readonly threadRowAccessory?: ComponentType<ExperimentalWebThreadRowAccessoryProps>;
   /** Follows the open thread's title in the chat header. */
   readonly chatHeaderAccessory?: ComponentType<ExperimentalWebThreadAccessoryProps>;
+  /** A control in the chat title bar, independent of the thread title. */
+  readonly chatToolbarAccessory?: ComponentType<ExperimentalWebThreadAccessoryProps>;
   /**
    * Entries for a thread's action menu, asked each time it opens. The menu shows at once, so
    * answer from state the feature already holds. Like the menu's other thread changes they
@@ -239,7 +240,9 @@ export function defineExperimentalWebFeature<
   for (const surface of feature.rightPanelSurfaces ?? []) {
     assertStableId(surface.id, `Right-panel surface id for '${feature.id}'`);
     assertLabel(surface.label, `Right-panel surface '${surface.id}'`);
-    assertShortcut(surface.shortcut, `Right-panel surface '${surface.id}'`);
+    if (surface.shortcut !== undefined) {
+      assertShortcut(surface.shortcut, `Right-panel surface '${surface.id}'`);
+    }
   }
   return feature;
 }

@@ -120,13 +120,14 @@ export function composeExperimentalWebFeatures(
     (path) => `Web settings page '${path}' is registered more than once.`,
   );
   const rightPanelSurfaces = uniqueBy(
-    uniqueBy(
-      features.flatMap((feature) => feature.rightPanelSurfaces ?? []),
-      (surface) => surface.id,
-      "duplicate-right-panel-surface",
-      (id) => `Right-panel surface '${id}' is registered more than once.`,
-    ),
-    (surface) => surface.shortcut,
+    features.flatMap((feature) => feature.rightPanelSurfaces ?? []),
+    (surface) => surface.id,
+    "duplicate-right-panel-surface",
+    (id) => `Right-panel surface '${id}' is registered more than once.`,
+  );
+  uniqueBy(
+    rightPanelSurfaces.flatMap(({ shortcut }) => (shortcut === undefined ? [] : [shortcut])),
+    (shortcut) => shortcut,
     "duplicate-right-panel-surface",
     (shortcut) => `Right-panel shortcut '${shortcut}' is registered more than once.`,
   );

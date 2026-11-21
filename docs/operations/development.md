@@ -2,7 +2,7 @@
 
 ## First checkout
 
-T3 Code uses [Vite+](https://viteplus.dev/guide/). Install its global `vp` command:
+Up.computer uses [Vite+](https://viteplus.dev/guide/). Install its global `vp` command.
 
 ```sh
 curl -fsSL https://vite.plus | bash
@@ -27,21 +27,11 @@ a new browser.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
-## Forge mirror (optional)
+## GitHub workflow
 
-GitHub is the source of truth. [source.tanstack.com/@pingdotgg/t3code](https://source.tanstack.com/@pingdotgg/t3code)
-is a two-way synced mirror built for many agents working at once. You never need it to contribute.
-
-```sh
-git remote set-url origin https://source.tanstack.com/@pingdotgg/t3code.git
-git remote add github https://github.com/pingdotgg/t3code.git
-src auth login --web && src auth setup-git
-```
-
-With `origin` on the mirror, use `src` (it takes `gh`'s commands and flags) and its `source` agent
-skill for PRs, issues, reviews, and CI, and leave GitHub's API alone. Pull requests into `main`
-merge on GitHub, so GitHub's required checks and reviews still apply. Numbers can differ between
-the two forges; in text that reaches GitHub, use the GitHub number.
+Use [Project-MMG/upcomputer](https://github.com/Project-MMG/upcomputer) for issues and PRs.
+Verify `git remote -v` before pushing an existing checkout. See the
+[repository workflow](./upstream-sync.md) and [contribution guide](../../CONTRIBUTING.md).
 
 ## Choosing a dev process
 

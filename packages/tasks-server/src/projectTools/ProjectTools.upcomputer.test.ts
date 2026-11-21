@@ -45,6 +45,14 @@ import {
 } from "../../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import { TaskAgentService } from "../agents/TaskAgentService.ts";
 import * as Bots from "../bots/BotService.ts";
+import * as GmailWorkspace from "../gmailWorkspace/GmailWorkspace.ts";
+import * as GmailWorkspaceMcp from "../gmailWorkspace/mcp.ts";
+import {
+  customerQuestion,
+  gmailListAction,
+  gmailThreadAction,
+  receipt,
+} from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import { TaskRepository } from "../persistence/TaskRepository.ts";
 import { TaskRepositoryLive } from "../persistence/TaskRepositoryLive.ts";
 import { TASKS_SERVER_FEATURE } from "../serverFeature.ts";
@@ -118,6 +126,7 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
     return body.result;
   });
   return {
+    saveWorkspace: (args: Schema.JsonObject) => call("gmail_workspace_save", args),
     read: (slug: string, args: Schema.JsonObject = {}) =>
       call("project_tool_read", { slug, arguments: args }),
     write: (slug: string, args: Schema.JsonObject = {}) =>
@@ -224,14 +233,15 @@ const fixtureLayer = Layer.unwrap(
       Layer.provide(BackgroundNotices.layer),
     );
     const services = Layer.merge(
-      ProjectTools.layer.pipe(
+      GmailWorkspace.layer.pipe(
+        Layer.provideMerge(ProjectTools.layer),
         Layer.provide(Composio.layer.pipe(Layer.provide(backend.layer))),
         Layer.provideMerge(botLayer),
       ),
       schedules,
     ).pipe(Layer.provide(database), Layer.provideMerge(configuration));
     const router = HttpRouter.serve(
-      McpHttp.layerMcpTransport(ProjectToolMcp.layer).pipe(
+      McpHttp.layerMcpTransport(Layer.merge(ProjectToolMcp.layer, GmailWorkspaceMcp.layer)).pipe(
         Layer.provide(services),
         Layer.provide(ServerSettings.layerTest()),
       ),
@@ -304,6 +314,163 @@ const code = (result: {
   expect(result.isError).toBe(true);
   return result.structuredContent?.code;
 };
+
+it.effect("saves and replaces a bot's Gmail layout and reads the project's connected inbox", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const workspace = yield* GmailWorkspace.GmailWorkspace;
+    const { backend, shells, enableComposio, authenticate } = yield* Fixture;
+    enableComposio();
+    const bot = yield* addBot("Email", firstProject);
+    const target = { projectId: firstProject, botId: bot.agent.id, threadId: bot.threadId };
+    const api = yield* authenticate(bot.threadId);
+    expect(yield* workspace.layout(target)).toBeNull();
+    expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("workspace-unavailable");
+    const initial = { title: "VT Inbox", order: "inbox-first" } as const;
+    const revised = { title: "VT Customer Mail", order: "thread-first" } as const;
+    expect(content(yield* api.saveWorkspace(initial))).toEqual(initial);
+    expect(yield* workspace.layout(target)).toEqual(initial);
+    expect(content(yield* api.saveWorkspace(revised))).toEqual(revised);
+    expect((yield* api.saveWorkspace({ ...revised, order: "side-by-side" })).isError).toBe(true);
+
+    const shell = shells.get(bot.threadId)!;
+    shells.set(bot.threadId, { ...shell, activeRunId: null });
+    expect(yield* workspace.layout(target)).toEqual(revised);
+    const connection = { projectId: firstProject, app: "gmail" };
+    for (const projectId of [secondProject, firstProject]) {
+      yield* tools.connection({ ...connection, projectId, operation: "start" });
+      const account = Array.from(backend.accounts.values()).at(-1)!;
+      account.status = "ACTIVE";
+      yield* tools.connection({ ...connection, projectId, operation: "finish" });
+    }
+    const account = Array.from(backend.accounts.values()).at(-1)!;
+    const grant = {
+      projectId: firstProject,
+      audience: { kind: "selected", botIds: [bot.agent.id] },
+      fixedInputs: {},
+    } as const;
+    yield* tools.grant({ ...grant, slug: gmailListAction });
+    yield* tools.grant({ ...grant, slug: gmailThreadAction });
+    expect(yield* workspace.inbox(target)).toEqual({
+      threads: [
+        {
+          threadId: customerQuestion.threadId,
+          subject: customerQuestion.subject,
+          sender: customerQuestion.sender,
+          preview: customerQuestion.preview,
+          unread: true,
+        },
+        {
+          threadId: receipt.threadId,
+          subject: receipt.subject,
+          sender: receipt.sender,
+          preview: receipt.preview,
+          unread: false,
+        },
+      ],
+      nextPageToken: null,
+    });
+    expect(
+      (yield* workspace.thread({
+        ...target,
+        gmailThreadId: customerQuestion.threadId,
+      })).messages.at(-1),
+    ).toMatchObject({
+      messageId: customerQuestion.messageId,
+      body: customerQuestion.messageText,
+    });
+    expect(backend.calls).toEqual([
+      expect.objectContaining({
+        slug: gmailListAction,
+        account: account.id,
+        userId: account.user_id,
+        arguments: {
+          user_id: "me",
+          query: "in:inbox",
+          max_results: 30,
+          include_payload: false,
+          verbose: false,
+        },
+      }),
+      expect.objectContaining({
+        slug: gmailThreadAction,
+        account: account.id,
+        userId: account.user_id,
+        arguments: { user_id: "me", thread_id: customerQuestion.threadId },
+      }),
+    ]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("rejects mismatched bot chats, revoked Gmail access and conflicting fixed inputs", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const workspace = yield* GmailWorkspace.GmailWorkspace;
+    const { backend, shells, enableComposio, authenticate } = yield* Fixture;
+    enableComposio();
+    const bot = yield* addBot("Email", firstProject);
+    const other = yield* addBot("Other bot", firstProject);
+    const target = { projectId: firstProject, botId: bot.agent.id, threadId: bot.threadId };
+    const api = yield* authenticate(bot.threadId);
+    const layout = { title: "VT Inbox", order: "inbox-first" } as const;
+    const shell = shells.get(bot.threadId)!;
+    shells.set(bot.threadId, { ...shell, projectId: secondProject });
+    expect(code(yield* api.saveWorkspace(layout))).toBe("not-a-bot");
+    shells.set(bot.threadId, { ...shell, interactionMode: "plan" });
+    expect(code(yield* api.saveWorkspace(layout))).toBe("plan-mode");
+    shells.set(bot.threadId, shell);
+    expect(content(yield* api.saveWorkspace(layout))).toEqual(layout);
+    for (const mismatched of [
+      { ...target, projectId: secondProject },
+      { ...target, botId: other.agent.id },
+      { ...target, threadId: other.threadId },
+    ]) {
+      expect((yield* Effect.flip(workspace.layout(mismatched))).code).toBe("not-a-bot");
+      expect((yield* Effect.flip(workspace.inbox(mismatched))).code).toBe("not-a-bot");
+      expect(
+        (yield* Effect.flip(
+          workspace.thread({ ...mismatched, gmailThreadId: customerQuestion.threadId }),
+        )).code,
+      ).toBe("not-a-bot");
+    }
+
+    const connection = { projectId: firstProject, app: "gmail" };
+    yield* tools.connection({ ...connection, operation: "start" });
+    const account = Array.from(backend.accounts.values())[0]!;
+    account.status = "ACTIVE";
+    yield* tools.connection({ ...connection, operation: "finish" });
+    const grant = {
+      projectId: firstProject,
+      audience: { kind: "selected", botIds: [bot.agent.id] },
+      fixedInputs: {},
+    } as const;
+    expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("not-assigned");
+    yield* tools.grant({
+      ...grant,
+      slug: gmailListAction,
+      fixedInputs: { user_id: "different@example.test" },
+    });
+    expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("workspace-input-conflict");
+    yield* tools.grant({
+      ...grant,
+      slug: gmailThreadAction,
+      fixedInputs: { thread_id: receipt.threadId },
+    });
+    expect(
+      (yield* Effect.flip(
+        workspace.thread({ ...target, gmailThreadId: customerQuestion.threadId }),
+      )).code,
+    ).toBe("workspace-input-conflict");
+    yield* tools.grant({ ...grant, slug: gmailListAction });
+    yield* tools.grant({ ...grant, slug: gmailListAction, audience: null });
+    expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("not-assigned");
+    yield* tools.grant({ ...grant, slug: gmailListAction });
+    yield* tools.connection({ ...connection, operation: "disconnect" });
+    expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("account-unavailable");
+    expect(yield* workspace.layout(target)).toEqual(layout);
+    expect(backend.calls).toEqual([]);
+  }).pipe(Effect.provide(testLayer)),
+);
 
 it.effect("searches the full paginated catalog and manages a verified project account", () =>
   Effect.gen(function* () {

@@ -158,6 +158,10 @@ const messages = {
     "Fixed inputs must use fields and values from this action's input schema.",
   "invalid-arguments": "The action arguments do not match its input schema.",
   "policy-changed": "The bot's project tool access changed while preparing the action.",
+  "workspace-unavailable": "This bot chat does not have a Gmail workspace.",
+  "workspace-input-conflict":
+    "A fixed project tool input conflicts with the Gmail workspace request.",
+  "workspace-storage-unavailable": "Up.computer could not load or save the Gmail workspace.",
   "storage-unavailable": "Up.computer could not load or save this project's tools.",
   "credentials-unavailable": "Up.computer could not read this environment's Composio key.",
   "composio-unavailable": "Up.computer could not reach Composio or read its response.",

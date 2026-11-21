@@ -2233,6 +2233,7 @@ it.live(
             "project_tools_search",
             "project_tool_read",
             "project_tool_write",
+            "gmail_workspace_save",
           ]),
         );
 

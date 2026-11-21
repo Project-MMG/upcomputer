@@ -8,6 +8,7 @@ import { TaskListSettingsMigration } from "./039_TaskListSettings.ts";
 import { DropOrphanTaskEventsMigration } from "./040_DropOrphanTaskEvents.ts";
 import { ProjectToolsMigration } from "./041_ProjectTools.ts";
 import { ProjectToolAppGrantsMigration } from "./042_ProjectToolAppGrants.ts";
+import { GmailWorkspacesMigration } from "./043_GmailWorkspaces.ts";
 import { TasksNewestFirstMigration } from "./031_TasksNewestFirst.ts";
 import { BotsMigration } from "./033_Bots.ts";
 import { UpdateDefaultFeedOrderPromptsMigration } from "./030_UpdateDefaultFeedOrderPrompts.ts";
@@ -146,5 +147,6 @@ export const TASK_MIGRATION_CONTRIBUTION = {
     { version: 40, name: "DropOrphanTaskEvents", run: DropOrphanTaskEventsMigration },
     { version: 41, name: "ProjectTools", run: ProjectToolsMigration },
     { version: 42, name: "ProjectToolAppGrants", run: ProjectToolAppGrantsMigration },
+    { version: 43, name: "GmailWorkspaces", run: GmailWorkspacesMigration },
   ],
 } as const;

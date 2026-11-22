@@ -203,20 +203,20 @@ const runCheck = Effect.fn("GmailWorkspaceScenario.runCheck")(function* (
 
 const changeAccess = Effect.fn("GmailWorkspaceScenario.changeAccess")(function* (
   fixture: FixtureConnection,
-  change: "revoke" | "replace-account",
+  change: "revoke" | "restore" | "replace-account",
 ) {
   const { client, projectId } = yield* gmailScenarioClient(fixture);
-  const connector = { projectId, app: "gmail" };
-  const list = { projectId, slug: gmailListAction, fixedInputs: {} };
-  if (change === "revoke") {
-    yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({ ...list, audience: null });
-    return;
+  if (change === "replace-account") {
+    const connector = { projectId, app: "gmail" };
+    yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "start" });
+    yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "finish" });
   }
-  yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "start" });
-  yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "finish" });
   yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
-    ...list,
-    audience: { kind: "selected", botIds: [TaskAgentId.make("vt-email")] },
+    projectId,
+    slug: gmailListAction,
+    fixedInputs: {},
+    audience:
+      change === "revoke" ? null : { kind: "selected", botIds: [TaskAgentId.make("vt-email")] },
   });
 });
 
@@ -239,7 +239,7 @@ test(
   "The Email bot drafts, applies Gmail annotations, and sends the reviewed revision once",
   WEB,
   async ({ t3, app, browser, screen }) => {
-    await t3.project("VT Home Repo", {
+    const project = await t3.project("VT Home Repo", {
       "AGENTS.md":
         "# VT Home Repo\n\nUse the VT prefix for internal workspaces.\n\nWorkspace title prefix: VT\nSign-off: The VT team\n",
       "bots/email/AGENTS.md":
@@ -252,22 +252,46 @@ test(
       token: issued.stdout.trim().split("\n").at(-1) ?? "",
     };
     const thread = await runFixture(seedEmailBot(fixture));
+    const ordinary = await t3.thread({ project, title: "Ordinary chat", messages: ["Hello"] });
     await t3.open(thread);
 
-    const opener = screen.getByRole("button", "Open Gmail inbox");
+    const headerGmail = screen.getByRole("button", "Open Gmail inbox");
+    const toggleRightPanel = screen.getByRole("button", "Toggle right panel");
+    const appsLauncher = screen.getByRole("button", /^Bot Apps\b/);
+    const appsMenuItem = screen.getByRole("menuitem", /^Bot Apps\b/);
+    const addSurface = screen.getByRole("button", "Add panel surface");
+    const openBotApp = screen.getByRole("button", "Open in right pane");
+    const closeBotApps = screen.getByRole("button", "Close Bot Apps");
+    const closeGmail = screen.getByRole("button", "Close Gmail inbox");
+    const noApps = screen.getByText("This bot has no saved apps yet.");
+    const openAppsFromLauncher = async () => {
+      await toggleRightPanel.tap();
+      await appsLauncher.tap();
+    };
+    const openAppsFromMenu = async () => {
+      await addSurface.tap();
+      await appsMenuItem.tap();
+    };
     const composer = screen.getByRole("textbox");
     const submit = screen.getByRole("button", "Submit message");
     const controls = () =>
       browser.evaluate<string[]>(
         'Array.from(document.querySelectorAll("[data-workspace-control]"), (node) => node.getAttribute("data-workspace-control"))',
       );
-    await expect(opener).toBeHidden();
     await expect(composer).toBeVisible({ timeout: 60_000 });
     await composer.fill("Create the Gmail workspace using our Home Repo and Email playbook.");
     await submit.tap();
-    await expect(opener).toBeVisible({ timeout: 45_000 });
-    await opener.tap();
+    await expect(
+      screen.getByText("Saved VT Inbox from the Home Repo and Email playbook."),
+    ).toBeVisible({ timeout: 45_000 });
+    await openAppsFromLauncher();
+    await expect(openBotApp).toBeVisible();
+    await app.screenshot("bot-apps-header");
+    await expect(headerGmail).toBeHidden();
+    await expect(browser.locator("[data-chat-header] button").getByText("Bot Apps")).toBeHidden();
+    await openBotApp.tap();
     await expect(screen.getByRole("heading", "VT Inbox")).toBeVisible();
+    await closeBotApps.tap();
     const questionRow = screen.getByRole("button", customerQuestion.subject, { exact: false });
     const receiptRow = screen.getByRole("button", receipt.subject, { exact: false });
     const draft = screen.getByRole("heading", "Reply draft");
@@ -319,8 +343,20 @@ test(
     await expect(
       screen.getByText("Saved VT Inbox from the Home Repo and Email playbook."),
     ).toBeVisible();
+    await openAppsFromLauncher();
+    await expect(noApps).toBeVisible();
+    await expect(openBotApp).toBeHidden();
     await app.screenshot("chief-gmail-visibility");
-    await expect(opener).toBeHidden();
+
+    await t3.open(ordinary);
+    await toggleRightPanel.tap();
+    await expect(screen.getByRole("heading", "Open a surface")).toBeVisible();
+    await expect(appsLauncher).toBeHidden();
+    await screen.getByRole("button", /^Files\b/).tap();
+    await addSurface.tap();
+    await expect(screen.getByRole("menuitem", /^Tasks\b/)).toBeVisible();
+    await expect(appsMenuItem).toBeHidden();
+    await app.screenshot("ordinary-chat-launcher");
 
     await t3.open("/bots?bot=vt-chief");
     await toolsTab.tap();
@@ -329,7 +365,7 @@ test(
     await expect(inboxRead).toBeHidden();
     await expect(screen.getByRole("button", "Manage access")).toHaveCount(0);
     await appsTab.tap();
-    await expect(screen.getByText("This bot has no saved apps yet.")).toBeVisible();
+    await expect(noApps).toBeVisible();
 
     await t3.open("/bots?bot=vt-email");
     await toolsTab.tap();
@@ -348,17 +384,15 @@ test(
     await expect(screen.getByRole("dialog", "Reply to email thread")).toBeHidden();
     await screen.getByRole("dialog", "Gmail").getByRole("button", "Close").tap();
 
-    const openBotApp = screen.getByRole("button", "Open in right pane");
     await appsTab.tap();
     await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
     await app.screenshot("bot-apps");
     await openBotApp.tap();
-    await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
-    await screen.getByRole("button", "Add panel surface").tap();
-    await screen.getByRole("menuitem", "Bot Apps", { exact: false }).tap();
+    await expect(screen.getByRole("region", "Gmail workspace")).toBeVisible();
+    await openAppsFromMenu();
     await openBotApp.tap();
     await expect(screen.getByRole("region", "Gmail workspace")).toBeVisible();
-    await screen.getByRole("button", "Close Bot Apps").tap();
+    await closeBotApps.tap();
 
     await questionRow.tap();
     await screen.getByRole("button", "Edit draft").tap();
@@ -370,10 +404,12 @@ test(
     await expect(noNewMail).toHaveCount(1);
 
     const reopen = async () => {
-      await screen.getByRole("button", "Close Gmail inbox").tap();
+      await closeGmail.tap();
       await expect(screen.getByRole("heading", "VT Customer Mail")).toBeHidden();
       await browser.reload();
-      await opener.tap();
+      await openAppsFromLauncher();
+      await openBotApp.tap();
+      await closeBotApps.tap();
       await questionRow.tap();
     };
     await reopen();
@@ -468,18 +504,31 @@ test(
     ];
     expect(await runFixture(fixtureSends)).toEqual(sends);
 
+    await openAppsFromMenu();
+    await expect(openBotApp).toBeVisible();
+    await expect(closeGmail).toBeVisible();
     await runFixture(changeAccess(fixture, "revoke"));
+    await browser.reload();
+    await expect(noApps).toBeVisible();
+    await expect(closeGmail).toBeHidden();
+    await app.screenshot("revoked-restored-tab");
     await runFixture(runCheck(fixture, scheduleId));
     await expect(screen.getByText("Gmail check blocked by not-assigned.")).toBeVisible();
-    await expect(opener).toBeHidden();
-    await expect(screen.getByRole("button", "Close Gmail inbox")).toBeHidden();
-    await expect(draft).toBeHidden();
     await app.screenshot("blocked-check");
+
+    await runFixture(changeAccess(fixture, "restore"));
+    await browser.reload();
+    await openBotApp.tap();
+    await closeBotApps.tap();
+    await questionRow.tap();
+    await expect(sent).toBeVisible();
+    await expect(screen.getByText(revised)).toBeVisible();
+    expect(await controls()).toEqual(["inbox", "thread"]);
+    await app.screenshot("restored-gmail-access");
 
     await runFixture(changeAccess(fixture, "replace-account"));
     await runFixture(runCheck(fixture, scheduleId));
-    await opener.tap();
-    await questionRow.tap();
+    await reopen();
     await expect(draftReady).toHaveCount(1);
     await expect(draftText).toBeVisible();
     await expect(dismissed).toBeHidden();

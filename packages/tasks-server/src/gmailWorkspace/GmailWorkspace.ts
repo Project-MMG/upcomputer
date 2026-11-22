@@ -1,13 +1,30 @@
-import type { AuthSessionId } from "@t3tools/contracts";
+import {
+  type AuthSessionId,
+  CommandId,
+  ComposerContextId,
+  MessageId,
+  type RunId,
+  UnknownContextRecord,
+} from "@t3tools/contracts";
+import {
+  collectComposerContextReferences,
+  formatComposerContextReference,
+} from "@t3tools/shared/composerContextReferences";
 import {
   type GmailDraftApprovalInput,
   type GmailDraftUpdateInput,
   type GmailInboxDecision,
   GmailMessageId,
   type GmailReplyDeliveryStatus,
-  type GmailReplyDraft,
+  GmailReplyDraft,
   GmailThreadId,
   GmailWorkspaceLayout,
+  GMAIL_WORKSPACE_ANNOTATION_CONTEXT,
+  GmailWorkspaceAnnotationContext,
+  type GmailWorkspaceAnnotationEdit,
+  type GmailWorkspaceAnnotationInput,
+  type GmailWorkspaceDraftSelection,
+  type GmailWorkspaceSavedLayout,
   ProjectToolCursor,
   ProjectToolError,
   type GmailInboxInput,
@@ -23,7 +40,10 @@ import * as Option from "effect/Option";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
+import {
+  type McpInvocationContext,
+  ThreadManagementService,
+} from "../../../../apps/server/src/extensionApi.ts";
 import { ProjectTools } from "../projectTools/ProjectTools.ts";
 
 const layoutJson = Schema.fromJsonString(GmailWorkspaceLayout);
@@ -31,6 +51,9 @@ const decodeLayout = Schema.decodeUnknownEffect(layoutJson);
 const encodeLayout = Schema.encodeEffect(layoutJson);
 const storageError = (cause: unknown) =>
   new ProjectToolError({ code: "workspace-storage-unavailable", cause });
+const decodeAnnotation = Schema.decodeUnknownOption(GmailWorkspaceAnnotationContext);
+const isContextRecord = Schema.is(UnknownContextRecord);
+const isReplyBody = Schema.is(GmailReplyDraft.fields.body);
 
 const gmailText = Schema.optional(Schema.NullOr(Schema.String));
 const gmailMessage = Schema.Struct({
@@ -97,6 +120,7 @@ const replyAddress = (sender: string | null | undefined) => {
 };
 
 type Caller = McpInvocationContext["Service"];
+type OwningTurn = GmailWorkspaceTarget & { readonly runId: RunId };
 type ReplyToApprove = GmailReplyDraft & {
   readonly accountId: string;
   readonly messageId: string;
@@ -122,7 +146,7 @@ export class GmailWorkspace extends Context.Service<
     ) => Effect.Effect<GmailWorkspaceLayout, ProjectToolError>;
     readonly layout: (
       target: GmailWorkspaceTarget,
-    ) => Effect.Effect<GmailWorkspaceLayout | null, ProjectToolError>;
+    ) => Effect.Effect<GmailWorkspaceSavedLayout | null, ProjectToolError>;
     readonly inbox: (input: GmailInboxInput) => Effect.Effect<GmailInboxPage, ProjectToolError>;
     readonly thread: (input: GmailThreadInput) => Effect.Effect<GmailThreadPage, ProjectToolError>;
     readonly check: (
@@ -140,28 +164,101 @@ export class GmailWorkspace extends Context.Service<
       approvalSessionId: AuthSessionId,
       input: GmailDraftApprovalInput,
     ) => Effect.Effect<GmailReplyDeliveryStatus, ProjectToolError>;
+    readonly annotate: (
+      input: GmailWorkspaceAnnotationInput,
+    ) => Effect.Effect<void, ProjectToolError>;
+    readonly applyAnnotation: (
+      caller: Caller,
+      edit: typeof GmailWorkspaceAnnotationEdit.Type,
+    ) => Effect.Effect<GmailReplyDraft | GmailWorkspaceSavedLayout, ProjectToolError>;
   }
 >()("@t3tools/tasks-server/gmailWorkspace/GmailWorkspace") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tools = yield* ProjectTools;
+  const threads = yield* ThreadManagementService;
   const uuid = (yield* SecureRandom.SecureRandom).uuidV4();
 
   const layout = Effect.fn("GmailWorkspace.layout")(function* (target: GmailWorkspaceTarget) {
     yield* tools.confirmBotChat(target);
-    const [saved] = yield* sql<{ readonly json: string }>`SELECT layout_json AS json
+    const [saved] = yield* sql<{ readonly json: string; readonly revision: number }>`
+      SELECT layout_json AS json, revision
       FROM gmail_workspaces WHERE project_id = ${target.projectId} AND bot_id = ${target.botId}`.pipe(
       Effect.mapError(storageError),
     );
-    return saved ? yield* decodeLayout(saved.json).pipe(Effect.mapError(storageError)) : null;
+    if (!saved) return null;
+    const value = yield* decodeLayout(saved.json).pipe(Effect.mapError(storageError));
+    return { ...value, revision: saved.revision };
   });
   const requireLayout = Effect.fn("GmailWorkspace.requireLayout")(function* (
     target: GmailWorkspaceTarget,
   ) {
-    if ((yield* layout(target)) === null) {
+    const saved = yield* layout(target);
+    if (saved === null) {
       return yield* new ProjectToolError({ code: "workspace-unavailable" });
     }
+    return saved;
+  });
+
+  const writableBotTurn = Effect.fn("GmailWorkspace.writableBotTurn")(function* (caller: Caller) {
+    const { plan, runId, ...owner } = yield* tools.confirmCaller(caller);
+    if (runId === null || owner.threadId !== caller.thread?.threadId) {
+      return yield* new ProjectToolError({ code: "not-a-bot" });
+    }
+    if (plan) return yield* new ProjectToolError({ code: "plan-mode" });
+    return { ...owner, runId };
+  });
+
+  const confirmSameTurn = Effect.fn("GmailWorkspace.confirmSameTurn")(function* (
+    caller: Caller,
+    owner: OwningTurn,
+  ) {
+    const current = yield* writableBotTurn(caller);
+    if (
+      current.runId !== owner.runId ||
+      current.projectId !== owner.projectId ||
+      current.botId !== owner.botId ||
+      current.threadId !== owner.threadId
+    ) {
+      return yield* new ProjectToolError({ code: "policy-changed" });
+    }
+  });
+
+  const currentAnnotation = Effect.fn("GmailWorkspace.currentAnnotation")(function* (
+    owner: OwningTurn,
+  ) {
+    const { runs } = yield* threads
+      .getProjectThreadRecords(owner, ["runs"], { runIds: [owner.runId] })
+      .pipe(Effect.mapError(storageError));
+    const messageId = runs.find((run) => run.id === owner.runId)?.userMessageId;
+    if (!messageId) return null;
+    const messages = yield* threads
+      .getMessagesById(owner.threadId, [messageId])
+      .pipe(Effect.mapError(storageError));
+    const message = messages.get(messageId);
+    if (message?.role !== "user" || message.createdBy !== "user") return null;
+    const record = message.context?.records.find(
+      (entry) =>
+        entry.kind === GMAIL_WORKSPACE_ANNOTATION_CONTEXT && entry.contextId === String(messageId),
+    );
+    if (!record || !("payload" in record)) return null;
+    if (
+      !collectComposerContextReferences(message.text).some(
+        (reference) => reference.contextId === record.contextId && reference.kind === record.kind,
+      )
+    )
+      return null;
+    const input = Option.getOrUndefined(decodeAnnotation(record.payload));
+    if (
+      !input ||
+      input.projectId !== owner.projectId ||
+      input.botId !== owner.botId ||
+      input.threadId !== owner.threadId
+    ) {
+      return yield* new ProjectToolError({ code: "workspace-annotation-invalid" });
+    }
+    return { id: record.contextId, target: input.target };
   });
 
   const readInbox = Effect.fn("GmailWorkspace.readInbox")(function* (
@@ -257,21 +354,173 @@ const make = Effect.gen(function* () {
     return draft;
   });
 
+  const loadSelectedDraft = Effect.fn("GmailWorkspace.loadSelectedDraft")(function* (
+    owner: GmailWorkspaceTarget,
+    selection: GmailWorkspaceDraftSelection,
+  ) {
+    const draft = yield* loadReplyToApprove({ ...owner, ...selection });
+    if (draft.deliveryStatus != null && draft.deliveryStatus !== "failed") {
+      return yield* new ProjectToolError({ code: "workspace-draft-changed" });
+    }
+    if (
+      draft.body.slice(selection.start, selection.start + selection.text.length) !== selection.text
+    ) {
+      return yield* new ProjectToolError({ code: "workspace-annotation-invalid" });
+    }
+    return draft;
+  });
+
+  const updateDraft = Effect.fn("GmailWorkspace.updateDraft")(function* (
+    input: GmailDraftUpdateInput,
+    turn?: { readonly caller: Caller; readonly runId: RunId },
+  ) {
+    yield* requireLayout(input);
+    const currentStatus = input.change.kind === "restore" ? "dismissed" : "pending";
+    const change =
+      input.change.kind === "edit"
+        ? sql`body = ${input.change.body}`
+        : sql`status = ${currentStatus === "dismissed" ? "pending" : "dismissed"}`;
+    return yield* tools.withConnectedBotReadAccess(
+      turn?.caller ?? input,
+      "gmail",
+      [threadAction(input.gmailThreadId)],
+      (accountId) =>
+        Effect.gen(function* () {
+          if (turn) yield* confirmSameTurn(turn.caller, { ...input, runId: turn.runId });
+          const [draft] = yield* sql<GmailReplyDraft>`
+            UPDATE gmail_workspace_replies
+            SET ${change}, revision = revision + 1
+            WHERE id = ${input.draftId} AND project_id = ${input.projectId} AND bot_id = ${input.botId}
+              AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
+              AND status = ${currentStatus} AND revision = ${input.revision}
+              AND NOT EXISTS (
+                SELECT 1 FROM gmail_workspace_reply_attempts AS attempt
+                WHERE attempt.draft_id = gmail_workspace_replies.id
+                  AND attempt.revision = gmail_workspace_replies.revision
+                  AND (attempt.status <> 'failed' OR ${input.change.kind} <> 'edit')
+              )
+            RETURNING id, status, revision, recipient, body
+          `.pipe(Effect.mapError(storageError));
+          if (!draft) return yield* new ProjectToolError({ code: "workspace-draft-changed" });
+          return draft;
+        }),
+    );
+  });
+
   return GmailWorkspace.of({
     layout,
     save: Effect.fn("GmailWorkspace.save")(function* (scope, nextLayout) {
-      const owner = yield* tools.confirmCaller(scope);
-      if (owner.threadId !== scope.thread?.threadId) {
-        return yield* new ProjectToolError({ code: "not-a-bot" });
+      const owner = yield* writableBotTurn(scope);
+      if (yield* currentAnnotation(owner)) {
+        return yield* new ProjectToolError({ code: "workspace-annotation-required" });
       }
-      if (owner.plan) return yield* new ProjectToolError({ code: "plan-mode" });
       const json = yield* encodeLayout(nextLayout).pipe(Effect.mapError(storageError));
+      yield* confirmSameTurn(scope, owner);
       yield* sql`INSERT INTO gmail_workspaces (project_id, bot_id, layout_json)
         VALUES (${owner.projectId}, ${owner.botId}, ${json})
-        ON CONFLICT (project_id, bot_id) DO UPDATE SET layout_json = excluded.layout_json`.pipe(
+        ON CONFLICT (project_id, bot_id) DO UPDATE
+        SET layout_json = excluded.layout_json, revision = gmail_workspaces.revision + 1
+        WHERE gmail_workspaces.layout_json <> excluded.layout_json`.pipe(
         Effect.mapError(storageError),
       );
       return nextLayout;
+    }),
+    annotate: Effect.fn("GmailWorkspace.annotate")(function* (input) {
+      const { note, target, ...owner } = input;
+      const saved = yield* requireLayout(owner);
+      let label: string;
+      if (target.kind === "draft") {
+        yield* tools.withConnectedBotReadAccess(
+          owner,
+          "gmail",
+          [threadAction(target.gmailThreadId)],
+          (accountId) =>
+            Effect.gen(function* () {
+              const draft = yield* loadSelectedDraft(owner, target);
+              if (draft.accountId !== accountId) {
+                return yield* new ProjectToolError({ code: "workspace-account-changed" });
+              }
+            }),
+        );
+        label = "Reply draft";
+      } else {
+        if (saved.revision !== target.revision || saved.order !== target.order) {
+          return yield* new ProjectToolError({ code: "workspace-layout-changed" });
+        }
+        label = target.control === "inbox" ? "Inbox" : "Thread reader";
+      }
+      const id = yield* uuid;
+      const record = {
+        version: 1,
+        kind: GMAIL_WORKSPACE_ANNOTATION_CONTEXT,
+        contextId: ComposerContextId.make(id),
+        label: `${label} · revision ${target.revision}`,
+        payload: { ...owner, target },
+      } satisfies UnknownContextRecord;
+      if (!isContextRecord(record)) {
+        return yield* new ProjectToolError({ code: "workspace-annotation-invalid" });
+      }
+      yield* threads
+        .sendToThread({
+          ...owner,
+          commandId: CommandId.make(`gmail-annotation:${id}`),
+          messageId: MessageId.make(id),
+          text: `${formatComposerContextReference(record)}\n\n${note}`,
+          context: { version: 1, records: [record] },
+          attachments: [],
+          mode: "queue",
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) => new ProjectToolError({ code: "workspace-annotation-send-failed", cause }),
+          ),
+        );
+    }),
+    applyAnnotation: Effect.fn("GmailWorkspace.applyAnnotation")(function* (caller, edit) {
+      const owner = yield* writableBotTurn(caller);
+      const annotation = yield* currentAnnotation(owner);
+      if (!annotation || annotation.id !== edit.annotationId) {
+        return yield* new ProjectToolError({ code: "workspace-annotation-required" });
+      }
+      const { target } = annotation;
+      if (target.kind === "draft" && "replacement" in edit.change) {
+        const draft = yield* loadSelectedDraft(owner, target);
+        const body =
+          draft.body.slice(0, target.start) +
+          edit.change.replacement +
+          draft.body.slice(target.start + target.text.length);
+        if (!isReplyBody(body)) {
+          return yield* new ProjectToolError({ code: "workspace-annotation-invalid" });
+        }
+        return yield* updateDraft(
+          { ...owner, ...target, change: { kind: "edit", body } },
+          { caller, runId: owner.runId },
+        );
+      }
+      if (target.kind !== "layout" || !("position" in edit.change)) {
+        return yield* new ProjectToolError({ code: "workspace-annotation-invalid" });
+      }
+      const current = yield* requireLayout(owner);
+      if (current.revision !== target.revision || current.order !== target.order) {
+        return yield* new ProjectToolError({ code: "workspace-layout-changed" });
+      }
+      const inboxFirst = (target.control === "inbox") === (edit.change.position === "first");
+      const nextLayout = {
+        title: current.title,
+        order: inboxFirst ? "inbox-first" : "thread-first",
+      } as const;
+      const json = yield* encodeLayout(nextLayout).pipe(Effect.mapError(storageError));
+      yield* confirmSameTurn(caller, owner);
+      const [updated] = yield* sql<{ readonly revision: number }>`
+        UPDATE gmail_workspaces SET layout_json = ${json}, revision = revision + 1
+        WHERE project_id = ${owner.projectId} AND bot_id = ${owner.botId}
+          AND revision = ${target.revision}
+        RETURNING revision
+      `.pipe(Effect.mapError(storageError));
+      if (!updated) return yield* new ProjectToolError({ code: "workspace-layout-changed" });
+      return { ...nextLayout, revision: updated.revision };
     }),
     inbox: Effect.fn("GmailWorkspace.inbox")(function* (input) {
       yield* requireLayout(input);
@@ -415,38 +664,7 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
-    updateDraft: Effect.fn("GmailWorkspace.updateDraft")(function* (input) {
-      yield* requireLayout(input);
-      const currentStatus = input.change.kind === "restore" ? "dismissed" : "pending";
-      const change =
-        input.change.kind === "edit"
-          ? sql`body = ${input.change.body}`
-          : sql`status = ${currentStatus === "dismissed" ? "pending" : "dismissed"}`;
-      return yield* tools.withConnectedBotReadAccess(
-        input,
-        "gmail",
-        [threadAction(input.gmailThreadId)],
-        (accountId) =>
-          Effect.gen(function* () {
-            const [draft] = yield* sql<GmailReplyDraft>`
-              UPDATE gmail_workspace_replies
-              SET ${change}, revision = revision + 1
-              WHERE id = ${input.draftId} AND project_id = ${input.projectId} AND bot_id = ${input.botId}
-                AND account_id = ${accountId} AND gmail_thread_id = ${input.gmailThreadId}
-                AND status = ${currentStatus} AND revision = ${input.revision}
-                AND NOT EXISTS (
-                  SELECT 1 FROM gmail_workspace_reply_attempts AS attempt
-                  WHERE attempt.draft_id = gmail_workspace_replies.id
-                    AND attempt.revision = gmail_workspace_replies.revision
-                    AND (attempt.status <> 'failed' OR ${input.change.kind} <> 'edit')
-                )
-              RETURNING id, status, revision, recipient, body
-            `.pipe(Effect.mapError(storageError));
-            if (!draft) return yield* new ProjectToolError({ code: "workspace-draft-changed" });
-            return draft;
-          }),
-      );
-    }),
+    updateDraft,
     approveDraft: Effect.fn("GmailWorkspace.approveDraft")(function* (approvalSessionId, input) {
       yield* requireLayout(input);
       const draft = yield* loadReplyToApprove(input);

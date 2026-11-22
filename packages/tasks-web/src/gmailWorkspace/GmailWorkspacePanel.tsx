@@ -1,10 +1,11 @@
 import { useGT } from "gt-react";
 import { ArrowLeftIcon, ArrowRightIcon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   GMAIL_WORKSPACE_RPC_METHODS,
-  type GmailWorkspaceLayout,
+  type GmailWorkspaceControl,
+  type GmailWorkspaceSavedLayout,
   type GmailWorkspaceTarget,
 } from "@t3tools/tasks-contracts/v1";
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
@@ -14,6 +15,7 @@ import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web
 import { useBots } from "../bots/botData.tsx";
 import { useRemoteData } from "../projectTools/remoteData.ts";
 import type { gmailWorkspaceApi } from "../rpc/gmailWorkspace.ts";
+import { GmailAnnotationPopover, type AnnotateGmailWorkspace } from "./GmailAnnotationPopover.tsx";
 import { GmailReplyDraft } from "./GmailReplyDraft.tsx";
 import { useGmailWorkspaceLayout } from "./GmailWorkspaceToolbar.tsx";
 
@@ -73,6 +75,7 @@ function InboxPage(props: {
   readonly onOpenThread: (id: string) => void;
   readonly refreshKey: string;
   readonly onRefresh: () => void;
+  readonly annotation: ReactNode;
 }) {
   const gt = useGT();
   const token = props.pages.token;
@@ -85,15 +88,18 @@ function InboxPage(props: {
     <>
       <div className="flex items-center justify-between gap-2 pb-2">
         <h3 className="text-sm font-medium">{gt("Inbox")}</h3>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={gt("Refresh inbox")}
-          disabled={inbox.loading}
-          onClick={props.onRefresh}
-        >
-          <RefreshCwIcon aria-hidden />
-        </Button>
+        <div className="flex items-center gap-1">
+          {props.annotation}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={gt("Refresh inbox")}
+            disabled={inbox.loading}
+            onClick={props.onRefresh}
+          >
+            <RefreshCwIcon aria-hidden />
+          </Button>
+        </div>
       </div>
       {inbox.error ? (
         <PaneStatus error>{inbox.error}</PaneStatus>
@@ -150,6 +156,7 @@ type ThreadReaderProps = {
   readonly canWrite: boolean;
   readonly canApprove: boolean;
   readonly onRefresh: () => void;
+  readonly onAnnotate: AnnotateGmailWorkspace | undefined;
 };
 
 function ThreadPage({
@@ -160,6 +167,7 @@ function ThreadPage({
   canWrite,
   canApprove,
   onRefresh,
+  onAnnotate,
 }: ThreadReaderProps & { readonly pages: PageStack }) {
   const gt = useGT();
   const token = pages.token;
@@ -209,9 +217,11 @@ function ThreadPage({
                 <GmailReplyDraft
                   key={draft.id}
                   draft={draft}
+                  gmailThreadId={threadId}
                   canWrite={canWrite}
                   canApprove={canApprove}
                   sendingAccount={sendingAccount}
+                  onAnnotate={onAnnotate}
                   onUpdate={async (revision, change) => {
                     const updated = await api.updateDraft({
                       gmailThreadId: threadId,
@@ -253,12 +263,14 @@ function Workspace({
   completedAt,
   canWrite,
   canApprove,
+  canAnnotate,
 }: {
   readonly api: Api;
-  readonly layout: GmailWorkspaceLayout;
+  readonly layout: GmailWorkspaceSavedLayout;
   readonly completedAt: string | null | undefined;
   readonly canWrite: boolean;
   readonly canApprove: boolean;
+  readonly canAnnotate: boolean;
 }) {
   const gt = useGT();
   const pages = usePageStack();
@@ -266,6 +278,25 @@ function Workspace({
   const [revision, setRevision] = useState(0);
   const refresh = () => setRevision((current) => current + 1);
   const refreshKey = `${completedAt ?? ""}:${revision}`;
+  const layoutRevision = layout.revision;
+  const annotate: AnnotateGmailWorkspace | undefined =
+    canAnnotate && layoutRevision !== undefined
+      ? (target, note) => api.annotate({ target, note })
+      : undefined;
+  const annotateControl = (control: GmailWorkspaceControl, label: string) =>
+    annotate && layoutRevision !== undefined ? (
+      <GmailAnnotationPopover
+        label={label}
+        iconOnly
+        readTarget={() => ({
+          kind: "layout",
+          control,
+          revision: layoutRevision,
+          order: layout.order,
+        })}
+        onAnnotate={annotate}
+      />
+    ) : null;
   const order =
     layout.order === "inbox-first"
       ? (["inbox", "thread"] as const)
@@ -288,6 +319,7 @@ function Workspace({
                 onOpenThread={setSelectedThread}
                 refreshKey={refreshKey}
                 onRefresh={refresh}
+                annotation={annotateControl(control, gt("Annotate inbox"))}
               />
             </section>
           ) : (
@@ -296,7 +328,10 @@ function Workspace({
               aria-label={gt("Thread reader")}
               data-workspace-control={control}
             >
-              <h3 className="pb-2 text-sm font-medium">{gt("Thread reader")}</h3>
+              <div className="flex items-center justify-between gap-2 pb-2">
+                <h3 className="text-sm font-medium">{gt("Thread reader")}</h3>
+                {annotateControl(control, gt("Annotate thread reader"))}
+              </div>
               {selectedThread === null ? (
                 <PaneStatus>{gt("Select an email to read its thread.")}</PaneStatus>
               ) : (
@@ -308,6 +343,7 @@ function Workspace({
                   canWrite={canWrite}
                   canApprove={canApprove}
                   onRefresh={refresh}
+                  onAnnotate={annotate}
                 />
               )}
             </section>
@@ -335,6 +371,10 @@ function SavedWorkspace({
     environmentId,
     GMAIL_WORKSPACE_RPC_METHODS.approveDraft,
   );
+  const canAnnotate = useExperimentalFeatureRpcPermission(
+    environmentId,
+    GMAIL_WORKSPACE_RPC_METHODS.annotate,
+  );
   if (layout.error) return <PaneStatus error>{layout.error}</PaneStatus>;
   if (layout.data === undefined) return <PaneStatus>{gt("Loading Gmail workspace…")}</PaneStatus>;
   if (layout.data === null)
@@ -346,6 +386,7 @@ function SavedWorkspace({
       completedAt={refreshKey}
       canWrite={canWrite}
       canApprove={canApprove}
+      canAnnotate={canAnnotate}
     />
   );
 }

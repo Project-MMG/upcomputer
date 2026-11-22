@@ -636,7 +636,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     event.clipboardData.setData(COMPOSER_CONTEXT_CLIPBOARD_MIME, fragment);
   };
   const renderContextReference = (reference: ChatMarkdownContextReference) => {
-    const record = asKnownContextRecord(resolvedContext.recordsById.get(reference.contextId));
+    const stored = resolvedContext.recordsById.get(reference.contextId);
+    if (stored && "payload" in stored && stored.kind === reference.kind) {
+      return <span className="font-medium">{stored.label}</span>;
+    }
+    const record = asKnownContextRecord(stored);
     if (record?.kind === "file" && userAudio.some((file) => file.id === record.attachmentId))
       return null;
     const annotationImage =

@@ -32,7 +32,12 @@ import {
 import {
   customerQuestion,
   gmailFixtureDeliveryFile,
+  gmailFixtureDraftNote,
+  gmailFixtureEditedReply,
   gmailFixtureKey,
+  gmailFixtureLayoutNote,
+  gmailFixtureReplacement,
+  gmailFixtureSelectedText,
   gmailFixtureSender,
   gmailFixtureSendLog,
   gmailListAction,
@@ -213,7 +218,7 @@ const fixtureSends = Effect.gen(function* () {
 });
 
 test(
-  "The Email bot queues a Gmail reply and sends the reviewed revision once",
+  "The Email bot drafts, applies Gmail annotations, and sends the reviewed revision once",
   WEB,
   async ({ t3, app, browser, screen }) => {
     await t3.project("VT Home Repo", {
@@ -284,7 +289,7 @@ test(
 
     await questionRow.tap();
     await screen.getByRole("button", "Edit draft").tap();
-    const edited = "Hi Jordan, I’ll verify the delivery date and follow up this afternoon.";
+    const edited = gmailFixtureEditedReply;
     await screen.getByRole("textbox", "Reply text").fill(edited);
     await screen.getByRole("button", "Save draft").tap();
     await expect(screen.getByText(edited)).toBeVisible();
@@ -316,6 +321,48 @@ test(
     await expect(screen.getByText(edited)).toBeVisible();
     await expect(draftReady).toHaveCount(1);
     await app.screenshot("restored-edited-draft");
+
+    const selected = await browser.evaluate<string>(`(() => {
+      const body = Array.from(document.querySelectorAll("p")).find(
+        (node) => node.textContent === ${JSON.stringify(edited)},
+      )?.firstChild;
+      if (!body) throw new Error("Draft body is missing.");
+      const text = ${JSON.stringify(gmailFixtureSelectedText)};
+      const start = body.textContent.indexOf(text);
+      const range = document.createRange();
+      range.setStart(body, start);
+      range.setEnd(body, start + text.length);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return selection.toString();
+    })()`);
+    expect(selected).toBe(gmailFixtureSelectedText);
+    const note = screen.getByRole("textbox", "Annotation note");
+    const sendNote = screen.getByRole("button", "Send note to bot");
+    await screen.getByRole("button", "Annotate selection").tap();
+    await expect(screen.getByText(gmailFixtureSelectedText, { exact: true })).toBeVisible();
+    await note.fill(gmailFixtureDraftNote);
+    await app.screenshot("draft-annotation");
+    await sendNote.tap();
+    await expect(screen.getByText(gmailFixtureDraftNote)).toBeVisible();
+    await expect(screen.getByText("Revised the selected reply text.")).toBeVisible();
+    const revised = edited.replace(gmailFixtureSelectedText, gmailFixtureReplacement);
+    await expect(screen.getByText(revised)).toBeVisible();
+    await app.screenshot("annotated-reply");
+
+    await screen.getByRole("button", "Annotate inbox").tap();
+    await note.fill(gmailFixtureLayoutNote);
+    await app.screenshot("layout-annotation");
+    await sendNote.tap();
+    await expect(screen.getByText(gmailFixtureLayoutNote)).toBeVisible();
+    await expect(screen.getByText("Moved the inbox above the thread reader.")).toBeVisible();
+    await reopen();
+    await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
+    expect(await controls()).toEqual(["inbox", "thread"]);
+    await expect(screen.getByText(revised)).toBeVisible();
+    await app.screenshot("annotated-layout-after-reopen");
+
     const approve = screen.getByRole("button", "Approve & send");
     const sent = screen.getByRole("heading", "Reply sent");
     await expect(approve).toBeEnabled();
@@ -329,7 +376,7 @@ test(
     await expect(approve).toBeHidden();
     await reopen();
     await expect(sent).toBeVisible();
-    await expect(screen.getByText(edited)).toBeVisible();
+    await expect(screen.getByText(revised)).toBeVisible();
     await expect(approve).toBeHidden();
     await app.screenshot("sent-reply-after-reopen");
     const sends = [
@@ -340,7 +387,7 @@ test(
           user_id: "me",
           thread_id: customerQuestion.threadId,
           recipient_email: "jordan@example.test",
-          message_body: edited,
+          message_body: revised,
           is_html: false,
           include_signature: false,
         },
@@ -362,7 +409,7 @@ test(
     await expect(draftReady).toHaveCount(1);
     await expect(draftText).toBeVisible();
     await expect(dismissed).toBeHidden();
-    await expect(screen.getByText(edited)).toBeHidden();
+    await expect(screen.getByText(revised)).toBeHidden();
     await app.screenshot("replacement-account");
     expect(await runFixture(fixtureSends)).toEqual(sends);
   },

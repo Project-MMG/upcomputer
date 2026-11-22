@@ -95,6 +95,7 @@ const CLIENT_GUARDED_FEATURE_RPC_SCOPES = {
   "upcomputer.bots.v1.extract": AuthOrchestrationOperateScope,
   "upcomputer.gmail-workspace.v1.updateDraft": AuthOrchestrationOperateScope,
   "upcomputer.gmail-workspace.v1.approveDraft": AuthOrchestrationOperateScope,
+  "upcomputer.gmail-workspace.v1.annotate": AuthOrchestrationOperateScope,
   "upcomputer.project-tools.v1.connection": AuthSettingsWriteScope,
   "upcomputer.project-tools.v1.appGrant": AuthSettingsWriteScope,
   "upcomputer.project-tools.v1.grant": AuthSettingsWriteScope,

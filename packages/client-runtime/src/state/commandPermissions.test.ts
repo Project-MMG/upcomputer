@@ -185,6 +185,7 @@ describe("command permissions", () => {
     { method: "upcomputer.project-tools.v1.appGrant", scope: AuthSettingsWriteScope },
     { method: "upcomputer.project-tools.v1.grant", scope: AuthSettingsWriteScope },
     { method: "upcomputer.gmail-workspace.v1.updateDraft", scope: AuthOrchestrationOperateScope },
+    { method: "upcomputer.gmail-workspace.v1.annotate", scope: AuthOrchestrationOperateScope },
     { method: "upcomputer.gmail-workspace.v1.approveDraft", scope: AuthOrchestrationOperateScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.gen(function* () {

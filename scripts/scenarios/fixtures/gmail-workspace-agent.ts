@@ -2,7 +2,15 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
-import { customerQuestion, receipt } from "./gmail-workspace-data.ts";
+import {
+  customerQuestion,
+  gmailFixtureDraftNote,
+  gmailFixtureEditedReply,
+  gmailFixtureLayoutNote,
+  gmailFixtureReplacement,
+  gmailFixtureSelectedText,
+  receipt,
+} from "./gmail-workspace-data.ts";
 
 type McpServer = {
   readonly name: string;
@@ -85,7 +93,9 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
     throw new Error("No Up.computer MCP connection in the bot's ACP session.");
   const text = prompt.map((part) => part.text ?? "").join("\n");
   const revised = text.includes("Revise the Gmail workspace");
-  if (!revised && !text.includes("Read AGENTS.md and bots/email/AGENTS.md")) {
+  const annotation =
+    /<context kind="gmail-workspace-annotation" id="([^"]+)">\n(.+)\n<\/context>/u.exec(text);
+  if (!annotation && !revised && !text.includes("Read AGENTS.md and bots/email/AGENTS.md")) {
     throw new Error("The turn did not include the bot's Home Repo instructions.");
   }
   const [shared, playbook] = await Promise.all([
@@ -97,6 +107,56 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
   if (prefix === undefined || !row?.[1] || !row[2])
     throw new Error("The fixture playbook did not describe a layout.");
   const output = await withMcp(endpoint, authorization, async (call) => {
+    if (annotation?.[1] && annotation[2]) {
+      const { botId, target } = JSON.parse(annotation[2]) as {
+        readonly botId: string;
+        readonly target: {
+          readonly kind: string;
+          readonly revision: number;
+          readonly gmailThreadId?: string;
+          readonly start?: number;
+          readonly text?: string;
+          readonly control?: string;
+          readonly order?: string;
+        };
+      };
+      if (botId !== "vt-email") throw new Error("Annotation did not go to the Email bot.");
+      const annotationId = annotation[1];
+      if (target.kind === "draft") {
+        if (
+          !text.includes(gmailFixtureDraftNote) ||
+          target.gmailThreadId !== customerQuestion.threadId ||
+          target.revision !== 4 ||
+          target.start !== gmailFixtureEditedReply.indexOf(gmailFixtureSelectedText) ||
+          target.text !== gmailFixtureSelectedText
+        )
+          throw new Error(
+            "The Gmail draft annotation did not carry the reviewed selection and note.",
+          );
+        readResult(
+          await call("gmail_workspace_apply_annotation", {
+            annotationId,
+            change: { replacement: gmailFixtureReplacement },
+          }),
+        );
+        return "Revised the selected reply text.";
+      }
+      if (
+        !text.includes(gmailFixtureLayoutNote) ||
+        target.kind !== "layout" ||
+        target.control !== "inbox" ||
+        target.order !== "thread-first" ||
+        target.revision !== 2
+      )
+        throw new Error("The Gmail layout annotation did not carry the selected control and note.");
+      readResult(
+        await call("gmail_workspace_apply_annotation", {
+          annotationId,
+          change: { position: "first" },
+        }),
+      );
+      return "Moved the inbox above the thread reader.";
+    }
     if (!text.includes("Check the Gmail inbox for new mail.")) {
       const result = readResult(
         await call("gmail_workspace_save", { title: `${prefix} ${row[1]}`, order: row[2] }),

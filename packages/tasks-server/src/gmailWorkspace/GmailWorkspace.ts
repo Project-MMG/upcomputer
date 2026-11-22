@@ -61,7 +61,7 @@ const gmailMessage = Schema.Struct({
   threadId: Schema.optional(GmailThreadId),
   sender: gmailText,
   subject: gmailText,
-  preview: gmailText,
+  preview: Schema.optional(Schema.Unknown),
   snippet: gmailText,
   messageText: gmailText,
   messageTimestamp: gmailText,
@@ -88,7 +88,8 @@ const decodeSendReceipt = Schema.decodeUnknownOption(
 );
 const messageTime = (message: typeof gmailMessage.Type) =>
   Date.parse(message.messageTimestamp ?? "") || 0;
-const previewText = (message: typeof gmailMessage.Type) => message.preview ?? message.snippet ?? "";
+const previewText = (message: typeof gmailMessage.Type) =>
+  typeof message.preview === "string" ? message.preview : (message.snippet ?? "");
 const nextPage = (next: string | null | undefined, current?: string) =>
   next && next !== current ? next : null;
 const invalidResponse = (cause: unknown) =>

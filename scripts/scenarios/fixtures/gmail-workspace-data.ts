@@ -108,7 +108,11 @@ export function gmailActionData(slug: string, threadId: unknown, questionDeliver
     : [earlierQuestion, receipt];
   if (slug === gmailListAction) {
     return {
-      messages: messages.map(({ messageText: _body, ...summary }) => summary),
+      messages: messages.map(({ messageText: _body, ...summary }) =>
+        summary.messageId === receipt.messageId
+          ? { ...summary, preview: false, snippet: summary.preview }
+          : summary,
+      ),
       nextPageToken: "",
     };
   }

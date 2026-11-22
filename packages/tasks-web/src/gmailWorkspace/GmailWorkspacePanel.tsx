@@ -8,6 +8,7 @@ import {
   type GmailWorkspaceSavedLayout,
   type GmailWorkspaceTarget,
 } from "@t3tools/tasks-contracts/v1";
+import { EmailMessageBody } from "../../../../apps/web/src/components/EmailMessageBody.tsx";
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
 import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/extensionApi.ts";
 import { cn } from "../../../../apps/web/src/lib/utils.ts";
@@ -17,7 +18,7 @@ import { useRemoteData } from "../projectTools/remoteData.ts";
 import type { gmailWorkspaceApi } from "../rpc/gmailWorkspace.ts";
 import { GmailAnnotationPopover, type AnnotateGmailWorkspace } from "./GmailAnnotationPopover.tsx";
 import { GmailReplyDraft } from "./GmailReplyDraft.tsx";
-import { useGmailWorkspaceLayout } from "./GmailWorkspaceToolbar.tsx";
+import { useGmailWorkspaceLayout } from "./useGmailWorkspaceLayout.ts";
 
 type Api = ReturnType<typeof gmailWorkspaceApi>;
 type PageStack = ReturnType<typeof usePageStack>;
@@ -210,9 +211,7 @@ function ThreadPage({
                   </time>
                 ) : null}
               </div>
-              <p className="text-sm wrap-anywhere whitespace-pre-wrap select-text">
-                {message.body || gt("No message text available.")}
-              </p>
+              <EmailMessageBody body={message.body} />
               {draft ? (
                 <GmailReplyDraft
                   key={draft.id}

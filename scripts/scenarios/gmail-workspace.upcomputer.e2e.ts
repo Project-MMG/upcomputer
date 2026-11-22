@@ -44,6 +44,7 @@ import {
   gmailReplyAction,
   gmailThreadAction,
   receipt,
+  receiptBody,
 } from "./fixtures/gmail-workspace-data.ts";
 import { T3_HOME } from "../e2e.config.ts";
 import { makeState, runPromise, test, WEB } from "./t3.ts";
@@ -136,17 +137,33 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
         "Read AGENTS.md and bots/email/AGENTS.md at the start of chat and background runs. Use gmail_workspace_save when asked to create or revise the workspace.",
     },
   });
+  yield* client[BOTS_RPC_METHODS.save]({
+    id: TaskAgentId.make("vt-chief"),
+    projectId,
+    allowedProjectIds: [projectId],
+    name: "Chief",
+    config: {
+      role: "Coordinator",
+      modelSelection,
+      runtimeMode: "approval-required",
+      instructions: "Coordinate work in VT Home Repo.",
+    },
+  });
   const connector = { projectId, app: "gmail" };
   yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "start" });
   yield* client[PROJECT_TOOLS_RPC_METHODS.connection]({ ...connector, operation: "finish" });
-  for (const slug of [gmailListAction, gmailThreadAction, gmailReplyAction]) {
-    yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
-      projectId,
-      slug,
-      audience: { kind: "selected", botIds: [bot.agent.id] },
-      fixedInputs: {},
-    });
-  }
+  yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
+    projectId,
+    slug: gmailListAction,
+    audience: { kind: "selected", botIds: [bot.agent.id] },
+    fixedInputs: {},
+  });
+  yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
+    projectId,
+    slug: gmailThreadAction,
+    audience: { kind: "all" },
+    fixedInputs: {},
+  });
   return { threadId: bot.threadId };
 });
 
@@ -284,8 +301,50 @@ test(
     await expect(draftText).toBeVisible();
     await app.screenshot("queued-reply");
     await receiptRow.tap();
-    await expect(screen.getByText(receipt.messageText)).toBeVisible();
+    await expect(screen.getByRole("heading", receipt.subject)).toBeVisible();
+    await app.screenshot("html-receipt");
+    await expect(screen.getByText(receiptBody, { exact: true })).toBeVisible();
+    await expect(screen.getByRole("link", "View order")).toBeVisible();
+    await expect(screen.getByRole("img", "Order receipt")).toBeHidden();
     await expect(draft).toBeHidden();
+
+    const toolsTab = screen.getByRole("tab", "Tools");
+    const appsTab = screen.getByRole("tab", "Bot Apps");
+    const inboxRead = screen.getByRole("heading", "Fetch emails");
+    const threadRead = screen.getByRole("heading", "Fetch message by thread ID");
+    await t3.open("/bots?bot=vt-chief");
+    await toolsTab.tap();
+    await expect(threadRead).toBeVisible();
+    await expect(inboxRead).toBeHidden();
+    await appsTab.tap();
+    await expect(screen.getByText("This bot has no saved apps yet.")).toBeVisible();
+
+    await t3.open("/bots?bot=vt-email");
+    await toolsTab.tap();
+    await expect(inboxRead).toBeVisible();
+    await expect(threadRead).toBeVisible();
+    await app.screenshot("bot-tools");
+    await screen.getByRole("button", "Browse actions").tap();
+    await screen.getByRole("button", "Configure").tap();
+    await expect(screen.getByRole("dialog", "Reply to email thread")).toBeVisible();
+    await expect(screen.getByRole("radio", "Selected bots")).toBeChecked();
+    await expect(screen.getByRole("checkbox", "Email")).toBeChecked();
+    await expect(screen.getByRole("checkbox", "Chief")).not.toBeChecked();
+    await screen.getByRole("button", "Save assignment").tap();
+    await expect(screen.getByRole("dialog", "Reply to email thread")).toBeHidden();
+    await expect(screen.getByRole("button", "Configure")).toBeHidden();
+
+    const openBotApp = screen.getByRole("button", "Open in right pane");
+    await appsTab.tap();
+    await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
+    await app.screenshot("bot-apps");
+    await openBotApp.tap();
+    await expect(screen.getByRole("heading", "VT Customer Mail")).toBeVisible();
+    await screen.getByRole("button", "Add panel surface").tap();
+    await screen.getByRole("menuitem", "Bot Apps", { exact: false }).tap();
+    await openBotApp.tap();
+    await expect(screen.getByRole("region", "Gmail workspace")).toBeVisible();
+    await screen.getByRole("button", "Close Bot Apps").tap();
 
     await questionRow.tap();
     await screen.getByRole("button", "Edit draft").tap();

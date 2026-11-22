@@ -79,6 +79,10 @@ comes back in its result, and the bot decides in its own chat what to remember.
 
 ## Project tools
 
+Open a bot's settings and choose **Tools** to see its assignments and manage its project tools.
+New individual assignments started here select that bot. Use the audience controls to share a
+tool with other bots in the project.
+
 Open **Settings → Projects**, select the project, then open **Tools**. If the project
 groups several checkouts, select the one whose bots you want to configure. Find an app
 in the Composio catalog and open **Manage access**. If it needs an account, connect it
@@ -106,9 +110,10 @@ Connect Gmail in the bot's project and assign **Fetch emails** and **Fetch Messa
 that bot under **Individual actions**. If the bot uses a Home Repo, point its instructions to the
 shared `AGENTS.md` and its own playbook. Ask the bot in its chat to set up a Gmail workspace.
 
-After the bot saves the layout, choose **Gmail inbox** in the chat. Open an email to read its
-thread. Use the annotation button next to **Inbox** or **Thread reader** to ask the bot to move
-that control. The saved layout opens again from the same chat.
+After the bot saves the layout, choose **Gmail inbox** in the chat, or open the saved workspace
+from **Bot Apps** in the bot's settings or right-pane menu. Open an email to read its thread.
+Use the annotation button next to **Inbox** or **Thread reader** to ask the bot to move that
+control.
 
 To check for mail in the background, ask the bot to set up a scheduled prompt in its own chat.
 Have the prompt read the bot's playbook, check the Gmail workspace, and draft replies for messages

@@ -34,7 +34,9 @@ globalThis.fetch = async (input, init) => {
   const path = url.pathname.replace(/^\/api\/v3\.1/, "");
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const notFound = () => json({ error: "No matching fixture route" }, 404);
+  if (path === "/toolkits") return json({ items: [gmailApp] });
   if (path === "/toolkits/gmail") return json(gmailApp);
+  if (path === "/tools") return json({ items: gmailActions });
   if (path.startsWith("/tools/")) {
     const action = gmailActions.find(({ slug }) => path === `/tools/${slug}`);
     return action ? json(action) : notFound();

@@ -108,6 +108,7 @@ import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { withoutHiddenProductSurfaces } from "~/product/productFlags";
 import { productRightPanelSurface, productRightPanelSurfaces } from "~/product/ProductSlots";
+import type { ExperimentalWebThreadAccessoryProps } from "~/product/WebFeature";
 import { useMessages } from "gt-react";
 import { observeResize } from "~/lib/observeResize";
 import { surfaceShortcutKey } from "~/lib/surfaceShortcutKey";
@@ -150,6 +151,7 @@ export interface RightPanelTabsProps {
   onAddDevice: () => void;
   /** Offers the product features' surfaces too; left out where the panel is not beside a thread. */
   onAddFeatureSurface?: (featureSurfaceId: string) => void;
+  featureSurfaceThread?: ExperimentalWebThreadAccessoryProps;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
   browserAvailable: boolean;
@@ -229,9 +231,10 @@ interface FeatureSurfaceAction {
 function featureSurfaceActions(
   onAdd: ((featureSurfaceId: string) => void) | undefined,
   translate: (label: string) => string,
+  thread: ExperimentalWebThreadAccessoryProps | undefined,
 ): FeatureSurfaceAction[] {
   if (!onAdd) return [];
-  return productRightPanelSurfaces().map((surface) => ({
+  return productRightPanelSurfaces(thread).map((surface) => ({
     label: translate(surface.label),
     icon: surface.icon,
     shortcut: surface.shortcut,
@@ -1141,7 +1144,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     });
   };
 
-  const featureActions = featureSurfaceActions(props.onAddFeatureSurface, m);
+  const featureActions = featureSurfaceActions(
+    props.onAddFeatureSurface,
+    m,
+    props.featureSurfaceThread,
+  );
   const coreAddSurfaceActions = withoutHiddenProductSurfaces([
     {
       label: "Browser",

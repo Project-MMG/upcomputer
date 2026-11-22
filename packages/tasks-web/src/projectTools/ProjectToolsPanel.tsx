@@ -1,8 +1,10 @@
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import {
   PROJECT_TOOLS_RPC_METHODS as M,
   type ProjectToolAction,
   type ProjectToolApp,
   type ProjectToolAssignment,
+  type ProjectToolAudience,
   type ProjectToolSettings,
 } from "@t3tools/tasks-contracts/v1";
 import { PlugIcon, SearchIcon } from "lucide-react";
@@ -87,19 +89,30 @@ export default function ProjectToolsPanel({
           />
         </SettingsSection>
       ) : null}
-      {member ? <ProjectTools key={member.physicalProjectKey} member={member} /> : null}
+      {member ? (
+        <ProjectTools
+          key={member.physicalProjectKey}
+          environmentId={member.environmentId}
+          projectId={member.id}
+        />
+      ) : null}
     </div>
   );
 }
 
-function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }) {
-  const api = useMemo(
-    () => projectToolsApi(member.environmentId, member.id),
-    [member.environmentId, member.id],
-  );
-  const canGrant = useExperimentalFeatureRpcPermission(member.environmentId, M.grant);
-  const canGrantApp = useExperimentalFeatureRpcPermission(member.environmentId, M.appGrant);
-  const canConnect = useExperimentalFeatureRpcPermission(member.environmentId, M.connection);
+export function ProjectTools({
+  environmentId,
+  projectId,
+  bot,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly bot?: ProjectToolSettings["bots"][number];
+}) {
+  const api = useMemo(() => projectToolsApi(environmentId, projectId), [environmentId, projectId]);
+  const canGrant = useExperimentalFeatureRpcPermission(environmentId, M.grant);
+  const canGrantApp = useExperimentalFeatureRpcPermission(environmentId, M.appGrant);
+  const canConnect = useExperimentalFeatureRpcPermission(environmentId, M.connection);
   const { data: settings, error, loading, refresh } = useRemoteData(api.settings);
   const [detail, setDetail] = useState<Detail>();
   const [catalog, setCatalog] = useState<CatalogView>({ kind: "apps" });
@@ -108,10 +121,14 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
   const showAction = (slug: string) => setDetail({ kind: "action", slug });
   const showApp = (slug: string) => setDetail({ kind: "app", slug });
   const close = () => setDetail(undefined);
+  const appliesToBot = ({ audience }: { readonly audience: ProjectToolAudience }) =>
+    !bot || audience.kind === "all" || audience.botIds.includes(bot.id);
+  const grants = (settings?.appGrants ?? []).filter(appliesToBot);
+  const assignments = (settings?.assignments ?? []).filter(appliesToBot);
   const configuredApps = new Set([
     ...(settings?.accounts ?? []).map(({ app }) => app),
-    ...(settings?.appGrants ?? []).map(({ app }) => app.slug),
-    ...(settings?.assignments ?? []).map(({ action }) => action.app),
+    ...grants.map(({ app }) => app.slug),
+    ...assignments.map(({ action }) => action.app),
   ]);
 
   const revoke = async (slug: string) => {
@@ -132,7 +149,9 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
     <>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-prose text-sm text-muted-foreground">
-          Connect apps and choose which bots in this project can use them.
+          {bot
+            ? `Manage the project tools ${bot.name} can use.`
+            : "Connect apps and choose which bots in this project can use them."}
         </p>
         <Button size="sm" variant="outline" disabled={loading} onClick={refresh}>
           Refresh
@@ -152,12 +171,15 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
       ) : null}
       {settings ? (
         <>
+          {bot && settings.configured && grants.length === 0 && assignments.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No tools assigned to {bot.name}.</p>
+          ) : null}
           {configuredApps.size > 0 ? (
             <SettingsSection title="Project apps" icon={<PlugIcon className="size-4" />}>
               {Array.from(configuredApps, (app) => {
                 const entry = settings.accounts.find((account) => account.app === app);
-                const grant = settings.appGrants?.find(({ app: granted }) => granted.slug === app);
-                const actions = settings.assignments.filter(({ action }) => action.app === app);
+                const grant = grants.find(({ app: granted }) => granted.slug === app);
+                const actions = assignments.filter(({ action }) => action.app === app);
                 const needsAccount =
                   entry ||
                   grant?.app.setup === "connect" ||
@@ -179,7 +201,9 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
                             {audience?.kind === "all"
                               ? "Full access for all bots"
                               : fullCount > 0
-                                ? `Full access for ${fullCount} ${fullCount === 1 ? "bot" : "bots"}`
+                                ? bot
+                                  ? "Full access for this bot"
+                                  : `Full access for ${fullCount} ${fullCount === 1 ? "bot" : "bots"}`
                                 : "Full access off"}
                             {actions.length > 0
                               ? ` · ${actions.length} individual ${actions.length === 1 ? "action" : "actions"}`
@@ -198,9 +222,9 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
               })}
             </SettingsSection>
           ) : null}
-          {settings.assignments.length > 0 ? (
+          {assignments.length > 0 ? (
             <SettingsSection title="Assigned actions">
-              {settings.assignments.map(({ action, audience, status }) => {
+              {assignments.map(({ action, audience, status }) => {
                 const matching =
                   audience.kind === "selected"
                     ? settings.bots.filter(({ id }) => audience.botIds.includes(id))
@@ -225,14 +249,16 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
                         <Button size="sm" variant="outline" onClick={() => showAction(action.slug)}>
                           Edit assignment
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={!canGrant || removing !== undefined}
-                          onClick={() => void revoke(action.slug)}
-                        >
-                          {removing === action.slug ? "Turning off…" : "Turn off"}
-                        </Button>
+                        {bot ? null : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={!canGrant || removing !== undefined}
+                            onClick={() => void revoke(action.slug)}
+                          >
+                            {removing === action.slug ? "Turning off…" : "Turn off"}
+                          </Button>
+                        )}
                       </div>
                     }
                   />
@@ -257,6 +283,7 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
               app={detail.slug}
               api={api}
               settings={settings}
+              defaultBotId={bot?.id}
               canWrite={canConnect}
               canGrantApp={canGrantApp}
               onChange={refresh}
@@ -274,6 +301,7 @@ function ProjectTools({ member }: { readonly member: SidebarProjectGroupMember }
               slug={detail.slug}
               api={api}
               settings={settings}
+              defaultBotId={bot?.id}
               canWrite={canGrant}
               onClose={close}
               onSaved={() => {

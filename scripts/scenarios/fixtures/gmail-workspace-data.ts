@@ -83,6 +83,8 @@ export const customerQuestion = {
   messageText: "Hi VT, could you confirm whether order VT-204 will arrive this Friday?",
 };
 
+export const receiptBody = "Your payment for order VT-199 has been received. Thank you.";
+
 export const receipt = {
   messageId: "19bf77729bcb3a56",
   threadId: "19bf77729bcb3a56",
@@ -91,7 +93,11 @@ export const receipt = {
   messageTimestamp: "2026-11-20T15:30:00Z",
   labelIds: ["INBOX"],
   preview: "Payment received for order VT-199.",
-  messageText: "Your payment for order VT-199 has been received. Thank you.",
+  messageText: `<div style="background-color: white">
+    <p>${receiptBody}</p>
+    <a href="https://shop.example.test/orders/VT-199">View order</a>
+    <img src="https://mail.example.test/receipt.png" alt="Order receipt">
+  </div>`,
 };
 
 const earlierQuestion = {

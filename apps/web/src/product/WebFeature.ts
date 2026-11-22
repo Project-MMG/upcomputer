@@ -106,6 +106,8 @@ export interface ExperimentalWebRightPanelSurfaceContribution {
   readonly label: string;
   /** A launcher entry and shortcut. Omit when a feature supplies its own opener. */
   readonly shortcut?: string;
+  /** When set, only matching chats offer this surface in the launcher. */
+  readonly availableInLauncher?: (thread: ExperimentalWebThreadAccessoryProps) => boolean;
   readonly icon: ComponentType<{ readonly className?: string }>;
   readonly load: () => Promise<{
     readonly default: ComponentType<ExperimentalWebRightPanelSurfaceProps>;

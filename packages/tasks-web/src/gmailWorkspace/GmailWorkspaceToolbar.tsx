@@ -3,30 +3,12 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type { GmailWorkspaceTarget } from "@t3tools/tasks-contracts/v1";
 import { useGT } from "gt-react";
 import { InboxIcon } from "lucide-react";
-import { useMemo } from "react";
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
 import type { ExperimentalWebThreadAccessoryProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useRightPanelStore } from "../../../../apps/web/src/rightPanelStore.ts";
-import { useQuietThreadShell } from "../../../../apps/web/src/state/entities.ts";
 import { useBots } from "../bots/botData.tsx";
-import { useRemoteData } from "../projectTools/remoteData.ts";
-import { gmailWorkspaceApi } from "../rpc/gmailWorkspace.ts";
 import { gmailWorkspaceSurfaceId } from "./surface.ts";
-
-export function useGmailWorkspaceLayout(
-  environmentId: EnvironmentId,
-  target: GmailWorkspaceTarget,
-) {
-  const { threadId, projectId, botId } = target;
-  const ref = scopeThreadRef(environmentId, threadId);
-  const shell = useQuietThreadShell(ref);
-  const api = useMemo(
-    () => gmailWorkspaceApi(environmentId, { threadId, projectId, botId }),
-    [environmentId, threadId, projectId, botId],
-  );
-  const refreshKey = shell?.latestRun?.completedAt;
-  return { ref, api, refreshKey, layout: useRemoteData(api.layout, refreshKey) };
-}
+import { useGmailWorkspaceLayout } from "./useGmailWorkspaceLayout.ts";
 
 function GmailWorkspaceButton({
   environmentId,

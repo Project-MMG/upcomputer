@@ -1,5 +1,11 @@
 import { lazy, Suspense } from "react";
-import { BotIcon, InboxIcon, ListTodoIcon, MessageSquareTextIcon } from "lucide-react";
+import {
+  BotIcon,
+  InboxIcon,
+  LayoutGridIcon,
+  ListTodoIcon,
+  MessageSquareTextIcon,
+} from "lucide-react";
 import { msg } from "gt-react";
 
 // The pure host module, not the web extension API: the product entry imports
@@ -149,6 +155,14 @@ export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
       label: msg("Gmail inbox"),
       icon: InboxIcon,
       load: () => import("./gmailWorkspace/GmailWorkspacePanel.tsx"),
+    },
+    {
+      id: "bot-apps",
+      label: msg("Bot Apps"),
+      shortcut: "A",
+      availableInLauncher: isBotChatThread,
+      icon: LayoutGridIcon,
+      load: () => import("./bots/BotApps.tsx"),
     },
   ],
   routes: [

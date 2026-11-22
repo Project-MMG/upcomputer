@@ -58,6 +58,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "../../../../apps/web/src/components/settings/settingsLayout.tsx";
+import { SettingsTabs } from "../../../../apps/web/src/components/settings/SettingsTabs.tsx";
 import {
   ErrorDetails,
   errorToastDescription,
@@ -97,10 +98,12 @@ import { formatRelativeTimeLabel } from "../../../../apps/web/src/timestampForma
 import { ensureLocalApi } from "../../../../apps/web/src/localApi.ts";
 import { cn, randomUUID } from "../../../../apps/web/src/lib/utils.ts";
 import { readTasksWebClient } from "../environmentApi.ts";
+import { ProjectTools } from "../projectTools/ProjectToolsPanel.tsx";
 import type { TasksWebProject } from "../ui/shared.ts";
 import { pickerProjectFor, pickerProjects, taskProjectsOf } from "../ui/taskProjects.ts";
 import { useSidebarProjectSnapshots } from "../ui/useWorkspaceData.ts";
 import { WorkspaceViewLayout } from "../ui/WorkspaceViewLayout.tsx";
+import { BotApps } from "./BotApps.tsx";
 import { useAutosave } from "./botAutosave.ts";
 import {
   botsChanged,
@@ -420,7 +423,7 @@ function BotForm({
             }
       }
     >
-      <WorkspacePageContainer>
+      <BotSettings environmentId={environmentId} bot={bot}>
         <BotError error={error} className="px-3 sm:px-4" />
         {bot && restoreNotices.length > 0 ? (
           <SettingsSection title={gt("Problems")} hideTitle>
@@ -661,7 +664,7 @@ function BotForm({
             </SettingsSection>
           </>
         ) : null}
-      </WorkspacePageContainer>
+      </BotSettings>
       <AlertDialog
         open={removal !== null}
         onOpenChange={(open) => {
@@ -711,6 +714,56 @@ function BotForm({
         </AlertDialogPopup>
       </AlertDialog>
     </WorkspaceViewLayout>
+  );
+}
+
+function BotSettings({
+  bot,
+  environmentId,
+  children,
+}: {
+  readonly bot: Bot | undefined;
+  readonly environmentId: EnvironmentId;
+  readonly children: ReactNode;
+}) {
+  const gt = useGT();
+  return (
+    <WorkspacePageContainer>
+      {bot ? (
+        <SettingsTabs
+          label={gt("Bot settings")}
+          tabs={[
+            { id: "overview", label: gt("Overview"), content: children },
+            {
+              id: "tools",
+              label: gt("Tools"),
+              content: (
+                <ProjectTools
+                  key={JSON.stringify([environmentId, bot.projectId, bot.agent.id])}
+                  environmentId={environmentId}
+                  projectId={bot.projectId}
+                  bot={{ id: bot.agent.id, name: bot.agent.name }}
+                />
+              ),
+            },
+            {
+              id: "apps",
+              label: gt("Bot Apps"),
+              content: (
+                <BotApps
+                  key={JSON.stringify([environmentId, bot.projectId, bot.agent.id])}
+                  environmentId={environmentId}
+                  bot={bot}
+                  fromSettings
+                />
+              ),
+            },
+          ]}
+        />
+      ) : (
+        children
+      )}
+    </WorkspacePageContainer>
   );
 }
 

@@ -67,6 +67,7 @@ export function ProjectToolAppDialog({
   app,
   api,
   settings,
+  defaultBotId,
   canWrite,
   canGrantApp,
   onChange,
@@ -77,6 +78,7 @@ export function ProjectToolAppDialog({
   readonly app: string;
   readonly api: ProjectToolsApi;
   readonly settings: ProjectToolSettings;
+  readonly defaultBotId?: TaskAgentId | undefined;
   readonly canWrite: boolean;
   readonly canGrantApp: boolean;
   readonly onChange: () => void;
@@ -145,6 +147,7 @@ export function ProjectToolAppDialog({
                 grant={appGrant}
                 assignments={assignments}
                 bots={settings.bots}
+                defaultBotId={defaultBotId}
                 canWrite={canGrantApp}
                 ready={
                   setup === "no-account" ||
@@ -294,6 +297,7 @@ function AppGrantForm({
   grant,
   assignments,
   bots,
+  defaultBotId,
   canWrite,
   ready,
   onSave,
@@ -303,6 +307,7 @@ function AppGrantForm({
   readonly grant: ProjectToolAppGrant | undefined;
   readonly assignments: ProjectToolSettings["assignments"];
   readonly bots: ProjectToolSettings["bots"];
+  readonly defaultBotId?: TaskAgentId | undefined;
   readonly canWrite: boolean;
   readonly ready: boolean;
   readonly onSave: (audience: ProjectToolAppGrantInput["audience"]) => Promise<void>;
@@ -310,7 +315,11 @@ function AppGrantForm({
 }) {
   const [audience, setAudience] = useState(grant?.audience.kind ?? "none");
   const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(
-    grant?.audience.kind === "selected" ? grant.audience.botIds : [],
+    grant?.audience.kind === "selected"
+      ? grant.audience.botIds
+      : !grant && defaultBotId
+        ? [defaultBotId]
+        : [],
   );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -405,6 +414,7 @@ export function ProjectToolActionDialog({
   slug,
   api,
   settings,
+  defaultBotId,
   canWrite,
   onClose,
   onSaved,
@@ -413,6 +423,7 @@ export function ProjectToolActionDialog({
   readonly slug: string;
   readonly api: ProjectToolsApi;
   readonly settings: ProjectToolSettings;
+  readonly defaultBotId?: TaskAgentId | undefined;
   readonly canWrite: boolean;
   readonly onClose: () => void;
   readonly onSaved: () => void;
@@ -459,6 +470,7 @@ export function ProjectToolActionDialog({
                 action={details.data}
                 assignment={assignment}
                 bots={settings.bots}
+                defaultBotId={defaultBotId}
                 canWrite={
                   canWrite &&
                   (!details.data.requiresAccount || account?.account?.status === "connected")
@@ -480,19 +492,27 @@ function GrantForm({
   action,
   assignment,
   bots,
+  defaultBotId,
   canWrite,
   onSave,
 }: {
   readonly action: ProjectToolActionDetails;
   readonly assignment: ProjectToolAssignment | undefined;
   readonly bots: ProjectToolSettings["bots"];
+  readonly defaultBotId?: TaskAgentId | undefined;
   readonly canWrite: boolean;
   readonly onSave: (input: Omit<ProjectToolGrantInput, "projectId">) => Promise<void>;
 }) {
   const formId = useId();
-  const [audience, setAudience] = useState(assignment?.audience.kind ?? "all");
+  const [audience, setAudience] = useState(
+    assignment?.audience.kind ?? (defaultBotId ? "selected" : "all"),
+  );
   const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(
-    assignment?.audience.kind === "selected" ? assignment.audience.botIds : [],
+    assignment?.audience.kind === "selected"
+      ? assignment.audience.botIds
+      : !assignment && defaultBotId
+        ? [defaultBotId]
+        : [],
   );
   const [fixed, setFixed] = useState(() =>
     assignment && Object.keys(assignment.fixedInputs).length > 0

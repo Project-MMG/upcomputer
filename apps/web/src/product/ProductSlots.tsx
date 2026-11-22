@@ -243,10 +243,12 @@ export function ProductSettingsPage(props: { readonly pathname: string }) {
 }
 
 /** Feature surfaces the right panel's launcher offers after core's. */
-export function productRightPanelSurfaces() {
-  return WEB_PRODUCT.rightPanelSurfaces.flatMap((surface) =>
-    surface.shortcut === undefined ? [] : [{ ...surface, shortcut: surface.shortcut }],
-  );
+export function productRightPanelSurfaces(thread?: ExperimentalWebThreadAccessoryProps) {
+  return WEB_PRODUCT.rightPanelSurfaces.flatMap((surface) => {
+    if (surface.shortcut === undefined) return [];
+    if (surface.availableInLauncher && (!thread || !surface.availableInLauncher(thread))) return [];
+    return [{ ...surface, shortcut: surface.shortcut }];
+  });
 }
 
 export function productRightPanelSurface(

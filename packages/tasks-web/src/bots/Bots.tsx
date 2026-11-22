@@ -94,6 +94,7 @@ import {
   useTasksWebAccess,
   useTasksWebAccessRevision,
 } from "../environmentApi.ts";
+import { GmailWorkspaceTabLifecycle } from "../gmailWorkspace/GmailWorkspaceTab.tsx";
 import { useSidebarComputerScope } from "../../../../apps/web/src/sidebarComputers/sidebarComputerSelection.ts";
 import { filterIdsToComputerScope } from "../../../../apps/web/src/sidebarComputers/sidebarComputers.logic.ts";
 import { useComputerName } from "../../../../apps/web/src/sidebarComputers/useSidebarComputers.ts";
@@ -628,11 +629,16 @@ export function BotHeader({
   readonly threadId: ThreadId;
 }) {
   const { bots, loaded, enabled } = useBots(environmentId);
-  const isBotChat = enabled && loaded && bots.some((bot) => bot.threadId === threadId);
-  const chatKey = isBotChat ? scopedThreadKey(scopeThreadRef(environmentId, threadId)) : null;
+  const bot = enabled && loaded ? bots.find((bot) => bot.threadId === threadId) : undefined;
+  const chatKey = bot ? scopedThreadKey(scopeThreadRef(environmentId, threadId)) : null;
   // A bot chat runs for days: its minimap shows one tick per day.
   useTimelineMinimapByDay(chatKey);
   useCompactComposerChat(chatKey);
-  if (!isBotChat) return null;
-  return <span hidden data-chat-header-hidden />;
+  if (!bot) return null;
+  return (
+    <>
+      <span hidden data-chat-header-hidden />
+      <GmailWorkspaceTabLifecycle environmentId={environmentId} bot={bot} />
+    </>
+  );
 }

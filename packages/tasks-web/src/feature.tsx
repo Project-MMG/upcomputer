@@ -60,7 +60,6 @@ export const isBotChatThread = (thread: ExperimentalWebThreadAccessoryProps) =>
 const LazyBotHeader = lazy(() =>
   import("./bots/Bots.tsx").then((module) => ({ default: module.BotHeader })),
 );
-const LazyGmailWorkspaceToolbar = lazy(() => import("./gmailWorkspace/GmailWorkspaceToolbar.tsx"));
 
 function SidebarBots() {
   return (
@@ -124,11 +123,6 @@ export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
   ),
   threadRowAccessory: ThreadRowRunCounts,
   chatHeaderAccessory: ChatHeaderRunCounts,
-  chatToolbarAccessory: (props) => (
-    <Suspense fallback={null}>
-      <LazyGmailWorkspaceToolbar {...props} />
-    </Suspense>
-  ),
   threadActions: (thread) => botMenu?.botThreadActions(thread) ?? [],
   sidebarSection: SidebarBots,
   coordinator: TaskReminders,

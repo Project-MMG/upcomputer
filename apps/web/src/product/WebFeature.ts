@@ -129,8 +129,6 @@ export interface ExperimentalWebFeatureContribution {
   readonly threadRowAccessory?: ComponentType<ExperimentalWebThreadRowAccessoryProps>;
   /** Follows the open thread's title in the chat header. */
   readonly chatHeaderAccessory?: ComponentType<ExperimentalWebThreadAccessoryProps>;
-  /** A control in the chat title bar, independent of the thread title. */
-  readonly chatToolbarAccessory?: ComponentType<ExperimentalWebThreadAccessoryProps>;
   /**
    * Entries for a thread's action menu, asked each time it opens. The menu shows at once, so
    * answer from state the feature already holds. Like the menu's other thread changes they

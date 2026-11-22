@@ -228,13 +228,11 @@ const make = Effect.gen(function* () {
     slug: string,
   ) {
     const [row] = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
-      FROM project_tool_grants WHERE project_id = ${projectId} AND slug = ${slug}`.pipe(
-      Effect.mapError(storageError),
-    );
+      FROM project_tool_grants WHERE project_id = ${projectId} AND slug = ${slug}`;
     if (!row) return null;
-    const grant = yield* decodeGrant(row.json).pipe(Effect.mapError(storageError));
+    const grant = yield* decodeGrant(row.json);
     return { grant, json: row.json };
-  });
+  }, Effect.mapError(storageError));
   const listAppGrants = Effect.fn("ProjectTools.listAppGrants")(function* (projectId: ProjectId) {
     const rows = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
       FROM project_tool_app_grants WHERE project_id = ${projectId} ORDER BY app`.pipe(

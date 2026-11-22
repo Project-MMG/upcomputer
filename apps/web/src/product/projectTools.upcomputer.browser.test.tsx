@@ -217,7 +217,7 @@ it("manages full app access, no access, and individual actions from Project Sett
   await userEvent.click(dialog.getByRole("button", { name: "Save assignment" }));
   await expect.element(screen.getByText("Scout", { exact: true })).toBeVisible();
 
-  await userEvent.click(screen.getByRole("button", { name: "Manage access", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Manage access", exact: true }).first());
   await userEvent.click(dialog.getByRole("radio", { name: "Selected bots" }));
   await userEvent.click(dialog.getByRole("checkbox", { name: "Writer" }));
   await expect.element(dialog.getByText("Full access", { exact: true })).toBeVisible();

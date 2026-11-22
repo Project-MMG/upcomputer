@@ -94,9 +94,11 @@ const nextPage = (next: string | null | undefined, current?: string) =>
   next && next !== current ? next : null;
 const invalidResponse = (cause: unknown) =>
   new ProjectToolError({ code: "composio-unavailable", cause });
+const inboxSlug = "GMAIL_FETCH_EMAILS";
+const threadSlug = "GMAIL_FETCH_MESSAGE_BY_THREAD_ID";
 
 const inboxAction = (pageToken?: string) => ({
-  slug: "GMAIL_FETCH_EMAILS",
+  slug: inboxSlug,
   arguments: {
     user_id: "me",
     query: "in:inbox",
@@ -107,7 +109,7 @@ const inboxAction = (pageToken?: string) => ({
   },
 });
 const threadAction = (threadId: string, pageToken?: string) => ({
-  slug: "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
+  slug: threadSlug,
   arguments: {
     user_id: "me",
     thread_id: threadId,
@@ -181,7 +183,9 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService;
   const uuid = (yield* SecureRandom.SecureRandom).uuidV4();
 
-  const layout = Effect.fn("GmailWorkspace.layout")(function* (target: GmailWorkspaceTarget) {
+  const storedLayout = Effect.fn("GmailWorkspace.storedLayout")(function* (
+    target: GmailWorkspaceTarget,
+  ) {
     yield* tools.confirmBotChat(target);
     const [saved] = yield* sql<{ readonly json: string; readonly revision: number }>`
       SELECT layout_json AS json, revision
@@ -195,7 +199,7 @@ const make = Effect.gen(function* () {
   const requireLayout = Effect.fn("GmailWorkspace.requireLayout")(function* (
     target: GmailWorkspaceTarget,
   ) {
-    const saved = yield* layout(target);
+    const saved = yield* storedLayout(target);
     if (saved === null) {
       return yield* new ProjectToolError({ code: "workspace-unavailable" });
     }
@@ -409,7 +413,15 @@ const make = Effect.gen(function* () {
   });
 
   return GmailWorkspace.of({
-    layout,
+    layout: Effect.fn("GmailWorkspace.layout")(function* (target) {
+      const saved = yield* storedLayout(target);
+      if (!saved) return null;
+      const available = yield* tools.hasConnectedBotReadGrants(target, "gmail", [
+        inboxSlug,
+        threadSlug,
+      ]);
+      return available ? saved : null;
+    }),
     save: Effect.fn("GmailWorkspace.save")(function* (scope, nextLayout) {
       const owner = yield* writableBotTurn(scope);
       if (yield* currentAnnotation(owner)) {

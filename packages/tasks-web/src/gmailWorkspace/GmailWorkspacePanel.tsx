@@ -377,7 +377,7 @@ function SavedWorkspace({
   if (layout.error) return <PaneStatus error>{layout.error}</PaneStatus>;
   if (layout.data === undefined) return <PaneStatus>{gt("Loading Gmail workspace…")}</PaneStatus>;
   if (layout.data === null)
-    return <PaneStatus>{gt("Ask this bot to create a Gmail workspace.")}</PaneStatus>;
+    return <PaneStatus>{gt("Gmail inbox is unavailable for this bot.")}</PaneStatus>;
   return (
     <Workspace
       api={api}

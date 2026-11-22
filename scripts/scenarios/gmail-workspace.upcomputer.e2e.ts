@@ -137,7 +137,7 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
         "Read AGENTS.md and bots/email/AGENTS.md at the start of chat and background runs. Use gmail_workspace_save when asked to create or revise the workspace.",
     },
   });
-  yield* client[BOTS_RPC_METHODS.save]({
+  const chief = yield* client[BOTS_RPC_METHODS.save]({
     id: TaskAgentId.make("vt-chief"),
     projectId,
     allowedProjectIds: [projectId],
@@ -161,10 +161,10 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
   yield* client[PROJECT_TOOLS_RPC_METHODS.grant]({
     projectId,
     slug: gmailThreadAction,
-    audience: { kind: "all" },
+    audience: { kind: "selected", botIds: [bot.agent.id] },
     fixedInputs: {},
   });
-  return { threadId: bot.threadId };
+  return { threadId: bot.threadId, chiefThreadId: chief.threadId };
 });
 
 const scheduleCheck = Effect.fn("GmailWorkspaceScenario.scheduleCheck")(function* (
@@ -312,10 +312,21 @@ test(
     const appsTab = screen.getByRole("tab", "Bot Apps");
     const inboxRead = screen.getByRole("heading", "Fetch emails");
     const threadRead = screen.getByRole("heading", "Fetch message by thread ID");
+    await t3.open({ threadId: thread.chiefThreadId });
+    await composer.fill("Create the Gmail workspace using our Home Repo and Email playbook.");
+    await submit.tap();
+    await expect(
+      screen.getByText("Saved VT Inbox from the Home Repo and Email playbook."),
+    ).toBeVisible();
+    await app.screenshot("chief-gmail-visibility");
+    await expect(opener).toBeHidden();
+
     await t3.open("/bots?bot=vt-chief");
     await toolsTab.tap();
-    await expect(threadRead).toBeVisible();
+    await expect(screen.getByText("No tools assigned to Chief.")).toBeVisible();
+    await expect(threadRead).toBeHidden();
     await expect(inboxRead).toBeHidden();
+    await expect(screen.getByRole("button", "Manage access")).toBeHidden();
     await appsTab.tap();
     await expect(screen.getByText("This bot has no saved apps yet.")).toBeVisible();
 
@@ -324,7 +335,9 @@ test(
     await expect(inboxRead).toBeVisible();
     await expect(threadRead).toBeVisible();
     await app.screenshot("bot-tools");
-    await screen.getByRole("button", "Browse actions").tap();
+    await screen.getByRole("button", "Manage access").tap();
+    await screen.getByText("Individual actions", { exact: true }).tap();
+    await app.screenshot("bot-individual-actions");
     await screen.getByRole("button", "Configure").tap();
     await expect(screen.getByRole("dialog", "Reply to email thread")).toBeVisible();
     await expect(screen.getByRole("radio", "Selected bots")).toBeChecked();
@@ -332,7 +345,7 @@ test(
     await expect(screen.getByRole("checkbox", "Chief")).not.toBeChecked();
     await screen.getByRole("button", "Save assignment").tap();
     await expect(screen.getByRole("dialog", "Reply to email thread")).toBeHidden();
-    await expect(screen.getByRole("button", "Configure")).toBeHidden();
+    await screen.getByRole("dialog", "Gmail").getByRole("button", "Close").tap();
 
     const openBotApp = screen.getByRole("button", "Open in right pane");
     await appsTab.tap();
@@ -457,14 +470,15 @@ test(
     await runFixture(changeAccess(fixture, "revoke"));
     await runFixture(runCheck(fixture, scheduleId));
     await expect(screen.getByText("Gmail check blocked by not-assigned.")).toBeVisible();
-    await expect(
-      screen.getByText("This action is unavailable to this bot in its current project."),
-    ).toBeVisible();
+    await expect(opener).toBeHidden();
+    await expect(screen.getByRole("button", "Close Gmail inbox")).toBeHidden();
     await expect(draft).toBeHidden();
     await app.screenshot("blocked-check");
 
     await runFixture(changeAccess(fixture, "replace-account"));
     await runFixture(runCheck(fixture, scheduleId));
+    await opener.tap();
+    await questionRow.tap();
     await expect(draftReady).toHaveCount(1);
     await expect(draftText).toBeVisible();
     await expect(dismissed).toBeHidden();

@@ -132,6 +132,11 @@ export class ProjectTools extends Context.Service<
     ) => Effect.Effect<Schema.Json, ProjectToolError>;
     readonly confirmCaller: (scope: Invocation) => Effect.Effect<ActionCaller, ProjectToolError>;
     readonly confirmBotChat: (target: BotAccess) => Effect.Effect<BotAccess, ProjectToolError>;
+    readonly hasConnectedBotReadGrants: (
+      bot: Pick<BotAccess, "projectId" | "botId">,
+      app: string,
+      slugs: readonly string[],
+    ) => Effect.Effect<boolean, ProjectToolError>;
     readonly readConnectedBotAction: (
       caller: BotReadCaller,
       app: string,
@@ -217,6 +222,18 @@ const make = Effect.gen(function* () {
     return yield* Effect.forEach(rows, ({ json }) =>
       decodeGrant(json).pipe(Effect.mapError(storageError)),
     );
+  });
+  const getActionGrant = Effect.fn("ProjectTools.getActionGrant")(function* (
+    projectId: ProjectId,
+    slug: string,
+  ) {
+    const [row] = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
+      FROM project_tool_grants WHERE project_id = ${projectId} AND slug = ${slug}`.pipe(
+      Effect.mapError(storageError),
+    );
+    if (!row) return null;
+    const grant = yield* decodeGrant(row.json).pipe(Effect.mapError(storageError));
+    return { grant, json: row.json };
   });
   const listAppGrants = Effect.fn("ProjectTools.listAppGrants")(function* (projectId: ProjectId) {
     const rows = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
@@ -328,12 +345,8 @@ const make = Effect.gen(function* () {
   ) {
     if (caller.plan && effect === "write") return yield* fail("plan-mode");
     const slug = typeof target === "string" ? target : target.slug;
-    const [row] = yield* sql<{ readonly json: string }>`SELECT grant_json AS json
-      FROM project_tool_grants WHERE project_id = ${caller.projectId} AND slug = ${slug}`.pipe(
-      Effect.mapError(storageError),
-    );
-    const stored = row ? yield* decodeGrant(row.json).pipe(Effect.mapError(storageError)) : null;
-    const direct = stored && includesBot(stored, caller.botId) ? stored : null;
+    const row = yield* getActionGrant(caller.projectId, slug);
+    const direct = row && includesBot(row.grant, caller.botId) ? row.grant : null;
     const full = direct
       ? []
       : (yield* listAppGrants(caller.projectId)).filter(({ grant }) =>
@@ -761,6 +774,25 @@ const make = Effect.gen(function* () {
     }),
     confirmCaller,
     confirmBotChat,
+    hasConnectedBotReadGrants: Effect.fn("ProjectTools.hasConnectedBotReadGrants")(function* (
+      { projectId, botId },
+      app,
+      slugs,
+    ) {
+      const account = yield* getAccount(projectId, app);
+      if (!account?.accountId || !(yield* composio.configured)) return false;
+      const direct = yield* Effect.forEach(slugs, (slug) =>
+        getActionGrant(projectId, slug).pipe(
+          Effect.map((row) => (row && includesBot(row.grant, botId) ? row.grant.action : null)),
+        ),
+      );
+      if (direct.some((action) => action && (action.app !== app || action.effect !== "read"))) {
+        return false;
+      }
+      if (direct.every((action) => action !== null)) return true;
+      const apps = yield* listAppGrants(projectId);
+      return apps.some(({ grant }) => grant.app.slug === app && includesBot(grant, botId));
+    }),
     execute: Effect.fn("ProjectTools.execute")((scope, effect, input) =>
       Effect.map(
         withActionSession(confirmCaller(scope), effect, input, (execute) => execute),

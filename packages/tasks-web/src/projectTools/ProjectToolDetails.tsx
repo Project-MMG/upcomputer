@@ -73,7 +73,8 @@ export function ProjectToolAppDialog({
   onChange,
   onClose,
   onBack,
-  onBrowseActions,
+  showActions = false,
+  renderActions,
 }: {
   readonly app: string;
   readonly api: ProjectToolsApi;
@@ -84,7 +85,8 @@ export function ProjectToolAppDialog({
   readonly onChange: () => void;
   readonly onClose: () => void;
   readonly onBack?: (() => void) | undefined;
-  readonly onBrowseActions: (app: ProjectToolApp) => void;
+  readonly showActions?: boolean | undefined;
+  readonly renderActions: (app: ProjectToolApp) => ReactNode;
 }) {
   const details = useRemoteData(
     useCallback(
@@ -98,6 +100,7 @@ export function ProjectToolAppDialog({
   const [link, setLink] = useState<string>();
   const [pending, setPending] = useState<ProjectToolConnectionInput["operation"]>();
   const [error, setError] = useState<string>();
+  const [actionsOpen, setActionsOpen] = useState(showActions);
   const appDetails = details.data ?? appGrant?.app;
   const setup = details.data?.setup;
   const name = appDetails?.name ?? assignments[0]?.action.appName ?? app;
@@ -143,7 +146,6 @@ export function ProjectToolAppDialog({
             {details.loading ? <p role="status">Checking app setup…</p> : null}
             {settings.appGrants && appDetails ? (
               <AppGrantForm
-                app={app}
                 grant={appGrant}
                 assignments={assignments}
                 bots={settings.bots}
@@ -158,8 +160,16 @@ export function ProjectToolAppDialog({
                   onChange();
                   onClose();
                 }}
-                onBrowseActions={() => onBrowseActions(appDetails)}
               />
+            ) : null}
+            {settings.configured && appDetails ? (
+              <details
+                open={actionsOpen}
+                onToggle={(event) => setActionsOpen(event.currentTarget.open)}
+              >
+                <summary className="cursor-pointer text-sm font-medium">Individual actions</summary>
+                {actionsOpen ? <div className="mt-3">{renderActions(appDetails)}</div> : null}
+              </details>
             ) : null}
             {setup === "no-account" ? <p>This app has actions that use no account.</p> : null}
             {setup === "auth-config-required" ? (
@@ -293,7 +303,6 @@ function BotSelection({
 }
 
 function AppGrantForm({
-  app,
   grant,
   assignments,
   bots,
@@ -301,9 +310,7 @@ function AppGrantForm({
   canWrite,
   ready,
   onSave,
-  onBrowseActions,
 }: {
-  readonly app: string;
   readonly grant: ProjectToolAppGrant | undefined;
   readonly assignments: ProjectToolSettings["assignments"];
   readonly bots: ProjectToolSettings["bots"];
@@ -311,7 +318,6 @@ function AppGrantForm({
   readonly canWrite: boolean;
   readonly ready: boolean;
   readonly onSave: (audience: ProjectToolAppGrantInput["audience"]) => Promise<void>;
-  readonly onBrowseActions: () => void;
 }) {
   const [audience, setAudience] = useState(grant?.audience.kind ?? "none");
   const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(
@@ -330,83 +336,70 @@ function AppGrantForm({
     (audience === "none" ? Boolean(grant) : ready && (audience === "all" || botIds.length > 0));
 
   return (
-    <div className="space-y-4">
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!canSave) return;
-          setError(undefined);
-          setPending(true);
-          void onSave(
-            audience === "none"
-              ? null
-              : audience === "all"
-                ? { kind: "all" }
-                : { kind: "selected", botIds },
-          )
-            .catch((cause: unknown) => setError(projectToolErrorMessage(cause)))
-            .finally(() => setPending(false));
-        }}
-      >
-        <fieldset disabled={disabled} className="space-y-2">
-          <legend className="text-sm font-medium">Full app access</legend>
-          <p className="text-sm text-muted-foreground">
-            Full access includes every action in this app, including actions that can change data.
-          </p>
-          <RadioGroup
-            aria-label="Full app access"
-            value={audience}
+    <form
+      className="space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canSave) return;
+        setError(undefined);
+        setPending(true);
+        void onSave(
+          audience === "none"
+            ? null
+            : audience === "all"
+              ? { kind: "all" }
+              : { kind: "selected", botIds },
+        )
+          .catch((cause: unknown) => setError(projectToolErrorMessage(cause)))
+          .finally(() => setPending(false));
+      }}
+    >
+      <fieldset disabled={disabled} className="space-y-2">
+        <legend className="text-sm font-medium">Full app access</legend>
+        <p className="text-sm text-muted-foreground">
+          Full access includes every action in this app, including actions that can change data.
+        </p>
+        <RadioGroup
+          aria-label="Full app access"
+          value={audience}
+          disabled={disabled}
+          onValueChange={(value) => {
+            if (value === "all" || value === "selected" || value === "none") setAudience(value);
+          }}
+        >
+          <label className="flex items-center gap-2 text-sm">
+            <Radio value="none" aria-label="No full access" /> No full access
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Radio value="all" aria-label="All bots in this project" /> All bots in this project
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Radio value="selected" aria-label="Selected bots" /> Selected bots
+          </label>
+        </RadioGroup>
+        {audience === "selected" ? (
+          <BotSelection
+            bots={bots}
+            selected={selected}
             disabled={disabled}
-            onValueChange={(value) => {
-              if (value === "all" || value === "selected" || value === "none") setAudience(value);
+            onChange={setSelected}
+            describe={(id) => {
+              if (selected.includes(id)) return "Full access";
+              const count = assignments.filter(
+                ({ audience }) => audience.kind === "all" || audience.botIds.includes(id),
+              ).length;
+              return count === 0 ? "No access" : count === 1 ? "1 action" : `${count} actions`;
             }}
-          >
-            <label className="flex items-center gap-2 text-sm">
-              <Radio value="none" aria-label="No full access" /> No full access
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Radio value="all" aria-label="All bots in this project" /> All bots in this project
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Radio value="selected" aria-label="Selected bots" /> Selected bots
-            </label>
-          </RadioGroup>
-          {audience === "selected" ? (
-            <BotSelection
-              bots={bots}
-              selected={selected}
-              disabled={disabled}
-              onChange={setSelected}
-              describe={(id) => {
-                if (selected.includes(id)) return "Full access";
-                const count = assignments.filter(
-                  ({ audience }) => audience.kind === "all" || audience.botIds.includes(id),
-                ).length;
-                return count === 0 ? "No access" : count === 1 ? "1 action" : `${count} actions`;
-              }}
-            />
-          ) : null}
-        </fieldset>
-        {error ? <InlineError>{error}</InlineError> : null}
-        <div className="flex justify-end">
-          <Button type="submit" disabled={!canSave}>
-            {pending ? "Saving…" : "Save app access"}
-          </Button>
-        </div>
-      </form>
-      <details>
-        <summary className="cursor-pointer text-sm font-medium">Individual actions</summary>
-        <div className="mt-2 space-y-2">
-          <p className="text-sm text-muted-foreground">
-            Give a bot access to specific actions in {app}, or set fixed inputs.
-          </p>
-          <Button type="button" size="sm" variant="outline" onClick={onBrowseActions}>
-            Browse individual actions
-          </Button>
-        </div>
-      </details>
-    </div>
+          />
+        ) : null}
+      </fieldset>
+      {error ? <InlineError>{error}</InlineError> : null}
+      <div className="flex justify-end">
+        <Button type="submit" disabled={!canSave}>
+          {pending ? "Saving…" : "Save app access"}
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -417,6 +410,7 @@ export function ProjectToolActionDialog({
   defaultBotId,
   canWrite,
   onClose,
+  onBack,
   onSaved,
   onOpenAccount,
 }: {
@@ -426,6 +420,7 @@ export function ProjectToolActionDialog({
   readonly defaultBotId?: TaskAgentId | undefined;
   readonly canWrite: boolean;
   readonly onClose: () => void;
+  readonly onBack?: (() => void) | undefined;
   readonly onSaved: () => void;
   readonly onOpenAccount: (app: string) => void;
 }) {
@@ -483,6 +478,13 @@ export function ProjectToolActionDialog({
             ) : null}
           </div>
         </DialogPanel>
+        {onBack ? (
+          <DialogFooter>
+            <Button variant="ghost" onClick={onBack}>
+              Back to app
+            </Button>
+          </DialogFooter>
+        ) : null}
       </DialogPopup>
     </Dialog>
   );
@@ -507,13 +509,12 @@ function GrantForm({
   const [audience, setAudience] = useState(
     assignment?.audience.kind ?? (defaultBotId ? "selected" : "all"),
   );
-  const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(
-    assignment?.audience.kind === "selected"
-      ? assignment.audience.botIds
-      : !assignment && defaultBotId
-        ? [defaultBotId]
-        : [],
-  );
+  const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(() => {
+    const assigned = assignment?.audience.kind === "selected" ? assignment.audience.botIds : [];
+    return defaultBotId && !assigned.includes(defaultBotId)
+      ? [...assigned, defaultBotId]
+      : assigned;
+  });
   const [fixed, setFixed] = useState(() =>
     assignment && Object.keys(assignment.fixedInputs).length > 0
       ? JSON.stringify(assignment.fixedInputs, null, 2)

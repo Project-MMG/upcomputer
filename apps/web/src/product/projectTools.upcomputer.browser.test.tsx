@@ -190,14 +190,13 @@ it("manages full app access, no access, and individual actions from Project Sett
   await userEvent.click(dialog.getByRole("button", { name: "Check connection" }));
   await expect.element(dialog.getByText("Notes sandbox account", { exact: true })).toBeVisible();
   await userEvent.click(dialog.getByText("Individual actions", { exact: true }));
-  await userEvent.click(dialog.getByRole("button", { name: "Browse individual actions" }));
 
-  await userEvent.fill(screen.getByRole("searchbox", { name: "Search actions" }), "repository");
-  await userEvent.click(screen.getByRole("button", { name: "Search", exact: true }));
-  await expect.element(screen.getByText("Read notes", { exact: true })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-  await expect.element(screen.getByText("Write note", { exact: true })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Configure" }).last());
+  await userEvent.fill(dialog.getByRole("searchbox", { name: "Search actions" }), "repository");
+  await userEvent.click(dialog.getByRole("button", { name: "Search", exact: true }));
+  await expect.element(dialog.getByText("Read notes", { exact: true })).toBeVisible();
+  await userEvent.click(dialog.getByRole("button", { name: "Load more" }));
+  await expect.element(dialog.getByText("Write note", { exact: true })).toBeVisible();
+  await userEvent.click(dialog.getByRole("button", { name: "Configure" }).last());
 
   await expect
     .element(dialog.getByRole("radio", { name: "All bots in this project" }))
@@ -208,6 +207,8 @@ it("manages full app access, no access, and individual actions from Project Sett
     '{"repository":"org/project"}',
   );
   await userEvent.click(dialog.getByRole("button", { name: "Save assignment" }));
+  await expect.element(page.getByRole("dialog", { name: "Fixture Notes" })).toBeVisible();
+  await userEvent.click(dialog.getByRole("button", { name: "Close", exact: true }));
   await expect.element(screen.getByText("All bots in this project", { exact: true })).toBeVisible();
 
   await userEvent.click(screen.getByRole("button", { name: "Edit assignment" }).first());

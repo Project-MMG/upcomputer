@@ -475,13 +475,13 @@ it.effect("saves and replaces a bot's Gmail layout and reads the project's conne
     const initial = { title: "VT Inbox", order: "inbox-first" } as const;
     const revised = { title: "VT Customer Mail", order: "thread-first" } as const;
     expect(content(yield* api.saveWorkspace(initial))).toEqual(initial);
-    expect(yield* workspace.layout(target)).toEqual({ ...initial, revision: 1 });
+    expect(yield* workspace.layout(target)).toBeNull();
     expect(content(yield* api.saveWorkspace(revised))).toEqual(revised);
     expect((yield* api.saveWorkspace({ ...revised, order: "side-by-side" })).isError).toBe(true);
 
     const shell = shells.get(bot.threadId)!;
     shells.set(bot.threadId, { ...shell, activeRunId: null });
-    expect(yield* workspace.layout(target)).toEqual({ ...revised, revision: 2 });
+    expect(yield* workspace.layout(target)).toBeNull();
     const connection = { projectId: firstProject, app: "gmail" };
     for (const projectId of [secondProject, firstProject]) {
       yield* tools.connection({ ...connection, projectId, operation: "start" });
@@ -496,7 +496,9 @@ it.effect("saves and replaces a bot's Gmail layout and reads the project's conne
       fixedInputs: {},
     } as const;
     yield* tools.grant({ ...grant, slug: gmailListAction });
+    expect(yield* workspace.layout(target)).toBeNull();
     yield* tools.grant({ ...grant, slug: gmailThreadAction });
+    expect(yield* workspace.layout(target)).toEqual({ ...revised, revision: 2 });
     expect(yield* workspace.inbox(target)).toEqual({
       threads: [
         {
@@ -694,11 +696,14 @@ it.effect("rejects mismatched bot chats, revoked Gmail access and conflicting fi
     expect(code(yield* api.recordReply(decision))).toBe("plan-mode");
     shells.set(bot.threadId, shell);
     yield* tools.grant({ ...grant, slug: gmailListAction, audience: null });
+    expect(yield* workspace.layout(target)).toBeNull();
     expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("not-assigned");
+    yield* tools.grantApp({ ...connection, audience: { kind: "all" } });
+    expect(yield* workspace.layout(target)).toEqual({ ...layout, revision: 1 });
     yield* tools.grant({ ...grant, slug: gmailListAction });
     yield* tools.connection({ ...connection, operation: "disconnect" });
     expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("account-unavailable");
-    expect(yield* workspace.layout(target)).toEqual({ ...layout, revision: 1 });
+    expect(yield* workspace.layout(target)).toBeNull();
     expect(backend.calls).toEqual([]);
   }).pipe(Effect.provide(testLayer)),
 );
@@ -807,8 +812,12 @@ it.effect("revises only the annotation's exact draft range in the owning bot tur
 it.effect("moves the annotated Gmail control while preserving a newer layout", () =>
   Effect.gen(function* () {
     const workspace = yield* GmailWorkspace.GmailWorkspace;
-    const { annotationMessages, authenticate, shells } = yield* Fixture;
+    const tools = yield* ProjectTools.ProjectTools;
+    const { annotationMessages, authenticate, enableComposio, shells } = yield* Fixture;
+    enableComposio();
     const bot = yield* addBot("Email layout", firstProject);
+    yield* connectGmail(firstProject);
+    yield* tools.grantApp({ projectId: firstProject, app: "gmail", audience: { kind: "all" } });
     const mcp = yield* authenticate(bot.threadId);
     const owner = { projectId: bot.projectId, botId: bot.agent.id, threadId: bot.threadId };
     const original = { title: "Mail", order: "thread-first" } as const;

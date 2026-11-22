@@ -51,6 +51,11 @@ type ActionInput = {
   readonly slug: string;
   readonly arguments: Schema.JsonObject;
 };
+type ConnectedAction = { readonly app: string; readonly expectedAccountId?: string | undefined };
+const gmailReplySlug = "GMAIL_REPLY_TO_THREAD";
+const isGmailWrite = (action: ProjectToolAction) =>
+  action.app === "gmail" && (action.effect === "write" || action.slug === gmailReplySlug);
+
 type BotReadCaller = BotAccess | Invocation;
 type AssignedAction = ProjectToolActionDetails & { readonly fixedInputs: ReadonlyArray<string> };
 type AccessError = Effect.Effect<never, ProjectToolError>;
@@ -133,9 +138,21 @@ export class ProjectTools extends Context.Service<
       input: ActionInput,
       expectedAccountId?: string,
     ) => Effect.Effect<
-      { readonly accountId: string; readonly data: Schema.Json },
+      { readonly accountId: string; readonly accountLabel: string; readonly data: Schema.Json },
       ProjectToolError
     >;
+    readonly sendApprovedGmailReply: <A>(
+      target: BotAccess,
+      reply: {
+        readonly accountId: string;
+        readonly gmailThreadId: string;
+        readonly recipient: string;
+        readonly body: string;
+      },
+      attempt: (
+        execute: Effect.Effect<Schema.Json, ProjectToolError>,
+      ) => Effect.Effect<A, ProjectToolError>,
+    ) => Effect.Effect<A, ProjectToolError>;
     readonly withConnectedBotReadAccess: <A>(
       caller: BotReadCaller,
       app: string,
@@ -294,6 +311,16 @@ const make = Effect.gen(function* () {
     return { ...bot, runId: null, plan: false };
   });
 
+  const hasGmailWorkspace = Effect.fn("ProjectTools.hasGmailWorkspace")(function* (
+    caller: Pick<BotAccess, "projectId" | "botId">,
+  ) {
+    const rows = yield* sql`SELECT 1 FROM gmail_workspaces
+      WHERE project_id = ${caller.projectId} AND bot_id = ${caller.botId}`.pipe(
+      Effect.mapError(storageError),
+    );
+    return rows.length > 0;
+  });
+
   const loadAccess = Effect.fn("ProjectTools.loadAccess")(function* (
     caller: ActionCaller,
     effect: ProjectToolAction["effect"],
@@ -356,26 +383,43 @@ const make = Effect.gen(function* () {
   const sameCaller = (left: ActionCaller, right: ActionCaller) =>
     left.runId === right.runId && left.botId === right.botId && left.projectId === right.projectId;
 
-  const executeAction = Effect.fn("ProjectTools.executeAction")(function* (
+  const withActionSession = Effect.fn("ProjectTools.withActionSession")(function* <A>(
     authorize: Effect.Effect<ActionCaller, ProjectToolError>,
     effect: ProjectToolAction["effect"],
     input: ActionInput,
-    connectedApp?: string,
-    expectedAccountId?: string,
+    use: (
+      execute: Effect.Effect<Schema.Json, ProjectToolError>,
+    ) => Effect.Effect<A, ProjectToolError>,
+    connected?: ConnectedAction,
   ) {
     const initial = yield* loadAccess(yield* authorize, effect, input.slug);
     const { live } = initial;
-    if (connectedApp !== undefined) {
-      const accountId = yield* connectedAccountId(initial, connectedApp, input);
-      if (expectedAccountId !== undefined && expectedAccountId !== accountId) {
+    const approvedWrite = effect === "write" && connected !== undefined;
+    const directGmailWrite = connected === undefined && isGmailWrite(live);
+    if (directGmailWrite && (yield* hasGmailWorkspace(initial))) {
+      return yield* fail("workspace-approval-required");
+    }
+    if (connected !== undefined) {
+      const accountId = yield* connectedAccountId(initial, connected.app, input);
+      if (connected.expectedAccountId !== undefined && connected.expectedAccountId !== accountId) {
         return yield* fail("workspace-account-changed");
       }
     }
-    const args = { ...input.arguments, ...initial.fixedInputs };
-    yield* validate(live.inputSchema, args);
-    if (initial.accountId !== null) {
-      yield* activeAccount(initial.projectId, live.app, initial.accountId);
+    if (
+      approvedWrite &&
+      Object.keys(initial.fixedInputs).some((key) => !Object.hasOwn(input.arguments, key))
+    ) {
+      return yield* fail("workspace-input-conflict");
     }
+    const args = approvedWrite ? input.arguments : { ...input.arguments, ...initial.fixedInputs };
+    yield* validate(live.inputSchema, args);
+    const account =
+      initial.accountId === null
+        ? null
+        : {
+            id: initial.accountId,
+            ...(yield* activeAccount(initial.projectId, live.app, initial.accountId)),
+          };
     const session = {
       userId: userId(initial.projectId),
       action: live,
@@ -390,14 +434,29 @@ const make = Effect.gen(function* () {
       ) {
         return yield* fail("policy-changed");
       }
+      if (directGmailWrite && (yield* hasGmailWorkspace(current))) {
+        return yield* fail("workspace-approval-required");
+      }
     });
     const data = yield* Effect.acquireUseRelease(
       composio.createActionSession(session),
-      (id) => recheck.pipe(Effect.andThen(composio.execute(id, live, args))),
+      (id) => {
+        const execute = composio.execute(id, live, args);
+        if (approvedWrite && account) {
+          return lock.withLock(
+            initial.projectId,
+            activeAccount(initial.projectId, live.app, account.id).pipe(
+              Effect.andThen(recheck),
+              Effect.andThen(use(execute)),
+            ),
+          );
+        }
+        return recheck.pipe(Effect.andThen(use(execute)));
+      },
       composio.closeSession,
     );
-    if (connectedApp !== undefined) yield* recheck;
-    return { data, accountId: initial.accountId };
+    if (connected !== undefined && effect === "read") yield* recheck;
+    return { data, account };
   });
 
   return ProjectTools.of({
@@ -616,10 +675,13 @@ const make = Effect.gen(function* () {
     }),
     search: Effect.fn("ProjectTools.search")(function* (scope, { query, offset = 0, app, cursor }) {
       const { projectId, botId, plan } = yield* confirmCaller(scope);
-      const [savedActions, savedApps] = yield* Effect.all([
+      const [savedActions, savedApps, gmailWorkspace] = yield* Effect.all([
         listGrants(projectId),
         listAppGrants(projectId),
+        hasGmailWorkspace({ projectId, botId }),
       ]);
+      const canRun = (item: ProjectToolAction) =>
+        (!plan || item.effect === "read") && (!gmailWorkspace || !isGmailWrite(item));
       const assigned = savedActions.filter((grant) => includesBot(grant, botId));
       const full = savedApps.flatMap(({ grant }) => (includesBot(grant, botId) ? [grant.app] : []));
       const fullApp = full.find(({ slug }) => slug === app);
@@ -638,7 +700,7 @@ const make = Effect.gen(function* () {
         const eligible = page.items.filter(
           (item) =>
             item.app === toolkit &&
-            (!plan || item.effect === "read") &&
+            canRun(item) &&
             (!item.requiresAccount || connected.has(toolkit)),
         );
         const details = yield* composio.assignedActions(eligible.map(({ slug }) => slug));
@@ -647,7 +709,7 @@ const make = Effect.gen(function* () {
           actions: details.flatMap((item) => {
             if (
               item.app !== toolkit ||
-              (plan && item.effect !== "read") ||
+              !canRun(item) ||
               (item.requiresAccount && !connected.has(toolkit))
             )
               return [];
@@ -661,8 +723,8 @@ const make = Effect.gen(function* () {
       }
       const words = query?.toLowerCase().trim().split(/\s+/).filter(Boolean) ?? [];
       const matches = assigned.filter(({ action }) => {
-        const { slug, name, appName, description, effect } = action;
-        if ((app && app !== action.app) || (plan && effect !== "read")) return false;
+        const { slug, name, appName, description } = action;
+        if ((app && app !== action.app) || !canRun(action)) return false;
         const text = `${slug} ${name} ${appName} ${description}`.toLowerCase();
         return words.every((word) => text.includes(word));
       });
@@ -700,20 +762,43 @@ const make = Effect.gen(function* () {
     confirmCaller,
     confirmBotChat,
     execute: Effect.fn("ProjectTools.execute")((scope, effect, input) =>
-      Effect.map(executeAction(confirmCaller(scope), effect, input), ({ data }) => data),
+      Effect.map(
+        withActionSession(confirmCaller(scope), effect, input, (execute) => execute),
+        ({ data }) => data,
+      ),
     ),
     readConnectedBotAction: Effect.fn("ProjectTools.readConnectedBotAction")(
       function* (caller, app, input, expectedAccountId) {
-        const result = yield* executeAction(
+        const { data, account } = yield* withActionSession(
           authorizeBotRead(caller),
           "read",
           input,
-          app,
-          expectedAccountId,
+          (execute) => execute,
+          { app, expectedAccountId },
         );
-        if (result.accountId === null) return yield* fail("account-unavailable");
-        return { data: result.data, accountId: result.accountId };
+        if (account === null) return yield* fail("account-unavailable");
+        return { data, accountId: account.id, accountLabel: account.label };
       },
+    ),
+    sendApprovedGmailReply: Effect.fn("ProjectTools.sendApprovedGmailReply")(
+      (target, { accountId, gmailThreadId, recipient, body }, attempt) =>
+        withActionSession(
+          confirmBotChat(target),
+          "write",
+          {
+            slug: gmailReplySlug,
+            arguments: {
+              user_id: "me",
+              thread_id: gmailThreadId,
+              recipient_email: recipient,
+              message_body: body,
+              is_html: false,
+              include_signature: false,
+            },
+          },
+          attempt,
+          { app: "gmail", expectedAccountId: accountId },
+        ).pipe(Effect.map(({ data }) => data)),
     ),
     withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(function* <A>(
       caller: BotReadCaller,

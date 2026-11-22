@@ -110,9 +110,13 @@ export const makeComposioFixture = () => {
     gmailApp,
   ];
   let sequence = 0;
-  let failNextWrite = false;
+  let nextWriteFailure: { readonly slug: string; readonly status: number } | undefined;
   let nextSessionGate:
-    | { readonly entered: Deferred.Deferred<void>; readonly proceed: Deferred.Deferred<void> }
+    | {
+        readonly slug: string | undefined;
+        readonly entered: Deferred.Deferred<void>;
+        readonly proceed: Deferred.Deferred<void>;
+      }
     | undefined;
 
   const http = HttpClient.make((request, url) =>
@@ -194,7 +198,12 @@ export const makeComposioFixture = () => {
       }
       if (path === "/tool_router/session" && request.method === "POST") {
         const settings = decodeSession(body);
-        if (nextSessionGate && settings.tools) {
+        const toolSlug = settings.tools?.[settings.toolkits.enable[0]]?.enable[0];
+        if (
+          nextSessionGate &&
+          toolSlug &&
+          (!nextSessionGate.slug || nextSessionGate.slug === toolSlug)
+        ) {
           const gate = nextSessionGate;
           nextSessionGate = undefined;
           yield* Deferred.succeed(gate.entered, undefined);
@@ -255,9 +264,10 @@ export const makeComposioFixture = () => {
           account,
           arguments: input.arguments,
         });
-        if (input.tool_slug === write && failNextWrite) {
-          failNextWrite = false;
-          return response({ error: "unconfirmed write" }, 502);
+        if (input.tool_slug === nextWriteFailure?.slug) {
+          const { status } = nextWriteFailure;
+          nextWriteFailure = undefined;
+          return response({ error: "fixture write error" }, status);
         }
         return response({
           result_type: "completed",
@@ -281,13 +291,13 @@ export const makeComposioFixture = () => {
       const index = tools.findIndex((item) => item.slug === slug);
       if (index !== -1) tools.splice(index, 1);
     },
-    failWrite: () => {
-      failNextWrite = true;
+    failWrite: (slug = write, status = 502) => {
+      nextWriteFailure = { slug, status };
     },
-    holdSession: Effect.gen(function* () {
+    holdSession: Effect.fn("ComposioFixture.holdSession")(function* (slug?: string) {
       const entered = yield* Deferred.make<void>();
       const proceed = yield* Deferred.make<void>();
-      nextSessionGate = { entered, proceed };
+      nextSessionGate = { slug, entered, proceed };
       return { entered, proceed };
     }),
   };

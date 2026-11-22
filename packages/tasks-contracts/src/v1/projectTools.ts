@@ -166,6 +166,7 @@ const messages = {
   "workspace-message-changed": "This Gmail message is no longer available for a reply.",
   "workspace-recipient-unavailable": "No reply address was found for this Gmail message.",
   "workspace-draft-changed": "This draft changed or is no longer available. Reopen it to continue.",
+  "workspace-approval-required": "Approve a reply in the Gmail workspace to send it.",
   "storage-unavailable": "Up.computer could not load or save this project's tools.",
   "credentials-unavailable": "Up.computer could not read this environment's Composio key.",
   "composio-unavailable": "Up.computer could not reach Composio or read its response.",

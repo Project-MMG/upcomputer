@@ -28,6 +28,8 @@ const GmailReplyBody = Schema.String.check(
 );
 const GmailDraftId = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const GmailDraftRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+const GmailReplyDeliveryStatus = Schema.Literals(["sent", "failed", "uncertain"]);
+export type GmailReplyDeliveryStatus = typeof GmailReplyDeliveryStatus.Type;
 
 export const GmailReplyDraft = Schema.Struct({
   id: GmailDraftId,
@@ -35,6 +37,7 @@ export const GmailReplyDraft = Schema.Struct({
   revision: GmailDraftRevision,
   recipient: Schema.String,
   body: GmailReplyBody,
+  deliveryStatus: Schema.optionalKey(Schema.NullOr(GmailReplyDeliveryStatus)),
 });
 export type GmailReplyDraft = typeof GmailReplyDraft.Type;
 
@@ -59,6 +62,7 @@ const inboxPage = Schema.Struct({
   nextPageToken: Schema.NullOr(ProjectToolCursor),
 });
 const threadPage = Schema.Struct({
+  sendingAccount: Schema.optionalKey(Schema.String),
   messages: Schema.Array(mail),
   nextPageToken: Schema.NullOr(ProjectToolCursor),
 });
@@ -78,11 +82,16 @@ export const GmailInboxDecision = Schema.Struct({
   messageId: GmailMessageId,
   body: Schema.NullOr(GmailReplyBody),
 });
-const updateDraftInput = Schema.Struct({
+const draftTarget = {
   ...botChat,
   gmailThreadId: GmailThreadId,
   draftId: GmailDraftId,
   revision: GmailDraftRevision,
+};
+const approveDraftInput = Schema.Struct(draftTarget);
+export type GmailDraftApprovalInput = typeof approveDraftInput.Type;
+const updateDraftInput = Schema.Struct({
+  ...draftTarget,
   change: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("edit"), body: GmailReplyBody }),
     Schema.Struct({ kind: Schema.Literal("dismiss") }),
@@ -97,6 +106,7 @@ export const GMAIL_WORKSPACE_RPC_METHODS = {
   inbox: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.inbox`,
   thread: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.thread`,
   updateDraft: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.updateDraft`,
+  approveDraft: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.approveDraft`,
 } as const;
 
 const M = GMAIL_WORKSPACE_RPC_METHODS;
@@ -111,6 +121,11 @@ export const GmailWorkspaceRpcGroup = RpcGroup.make(
   Rpc.make(M.updateDraft, {
     payload: updateDraftInput,
     success: GmailReplyDraft,
+    error: ProjectToolError,
+  }),
+  Rpc.make(M.approveDraft, {
+    payload: approveDraftInput,
+    success: GmailReplyDeliveryStatus,
     error: ProjectToolError,
   }),
 );

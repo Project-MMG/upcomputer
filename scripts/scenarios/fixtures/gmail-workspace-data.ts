@@ -1,7 +1,10 @@
 export const gmailFixtureKey = "composio-key-for-tests";
 export const gmailFixtureDeliveryFile = "gmail-question-delivered";
+export const gmailFixtureSendLog = "gmail-fixture-sends.ndjson";
 export const gmailListAction = "GMAIL_FETCH_EMAILS";
 export const gmailThreadAction = "GMAIL_FETCH_MESSAGE_BY_THREAD_ID";
+export const gmailReplyAction = "GMAIL_REPLY_TO_THREAD";
+export const gmailFixtureSender = "support@vt.example.test";
 
 export const gmailApp = {
   slug: "gmail",
@@ -17,11 +20,12 @@ const catalogAction = (
   name: string,
   properties: object,
   required: string[] = [],
+  tags = ["readOnlyHint"],
 ) => ({
   slug,
   name,
   toolkit: { slug: gmailApp.slug, name: gmailApp.name },
-  tags: ["readOnlyHint"],
+  tags,
   no_auth: false,
   input_parameters: { type: "object", properties, required, additionalProperties: false },
 });
@@ -44,6 +48,21 @@ export const gmailActions = [
       page_token: string,
     },
     ["thread_id"],
+  ),
+  catalogAction(
+    gmailReplyAction,
+    "Reply to email thread",
+    {
+      user_id: string,
+      thread_id: { ...string, pattern: "^[0-9a-f]+$" },
+      message_body: string,
+      recipient_email: { ...string, format: "email" },
+      is_html: boolean,
+      include_signature: boolean,
+      cc: { type: "array", items: string },
+    },
+    ["thread_id"],
+    ["createHint"],
   ),
 ];
 
@@ -89,6 +108,9 @@ export function gmailActionData(slug: string, threadId: unknown, questionDeliver
   }
   if (slug === gmailThreadAction) {
     return { messages: messages.filter((mail) => mail.threadId === threadId) };
+  }
+  if (slug === gmailReplyAction && typeof threadId === "string") {
+    return { response_data: { id: "19bf77729bcb3a99", threadId, labelIds: ["SENT"] } };
   }
   return undefined;
 }

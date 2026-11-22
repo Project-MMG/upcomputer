@@ -1,6 +1,7 @@
 import {
   GMAIL_REPLY_BODY_LIMIT,
   type GmailDraftUpdateInput,
+  type GmailReplyDeliveryStatus,
   type GmailReplyDraft as ReplyDraft,
 } from "@t3tools/tasks-contracts/v1";
 import { useGT } from "gt-react";
@@ -12,25 +13,43 @@ import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
 export function GmailReplyDraft({
   draft,
   canWrite,
+  canApprove,
+  sendingAccount,
   onUpdate,
+  onApprove,
 }: {
   readonly draft: ReplyDraft;
   readonly canWrite: boolean;
+  readonly canApprove: boolean;
+  readonly sendingAccount: string | undefined;
   readonly onUpdate: (
     revision: number,
     change: GmailDraftUpdateInput["change"],
   ) => Promise<ReplyDraft>;
+  readonly onApprove: (revision: number) => Promise<GmailReplyDeliveryStatus>;
 }) {
   const gt = useGT();
   const fieldId = useId();
   const [saved, setSaved] = useState<ReplyDraft>();
-  const current = saved && saved.revision > draft.revision ? saved : draft;
+  const current =
+    saved &&
+    (saved.revision > draft.revision ||
+      (saved.revision === draft.revision &&
+        saved.deliveryStatus &&
+        draft.deliveryStatus !== "sent" &&
+        draft.deliveryStatus !== "failed"))
+      ? saved
+      : draft;
+  const delivery = current.deliveryStatus;
+  const canEdit = canWrite && (delivery == null || delivery === "failed");
+  const canSend = canApprove && !!sendingAccount && delivery == null;
   const [edit, setEdit] = useState<{ readonly body: string; readonly revision: number }>();
-  const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<"update" | "send">();
+  const busy = operation !== undefined;
   const [error, setError] = useState<string>();
 
   async function update(revision: number, change: GmailDraftUpdateInput["change"]) {
-    setBusy(true);
+    setOperation("update");
     setError(undefined);
     try {
       setSaved(await onUpdate(revision, change));
@@ -38,7 +57,20 @@ export function GmailReplyDraft({
     } catch (cause) {
       setError(projectToolErrorMessage(cause));
     } finally {
-      setBusy(false);
+      setOperation(undefined);
+    }
+  }
+
+  async function approve() {
+    setOperation("send");
+    setError(undefined);
+    try {
+      const deliveryStatus = await onApprove(current.revision);
+      setSaved({ ...current, deliveryStatus });
+    } catch (cause) {
+      setError(projectToolErrorMessage(cause));
+    } finally {
+      setOperation(undefined);
     }
   }
 
@@ -71,11 +103,29 @@ export function GmailReplyDraft({
 
   return (
     <section className="space-y-2 rounded-md border border-border bg-muted/25 p-3">
-      <h5 className="text-sm font-medium">{gt("Reply draft")}</h5>
-      <p className="text-xs wrap-anywhere text-muted-foreground">
-        {gt("To")} {current.recipient}
-      </p>
-      {edit && canWrite ? (
+      <h5 aria-live="polite" className="text-sm font-medium">
+        {delivery === "sent" ? gt("Reply sent") : gt("Reply draft")}
+      </h5>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs wrap-anywhere">
+        {sendingAccount ? (
+          <>
+            <dt className="text-muted-foreground">{gt("Sending account")}</dt>
+            <dd>{sendingAccount}</dd>
+          </>
+        ) : null}
+        <dt className="text-muted-foreground">{gt("To")}</dt>
+        <dd>{current.recipient}</dd>
+      </dl>
+      {delivery === "uncertain" ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {gt("Delivery uncertain. Check Sent in Gmail before sending another reply.")}
+        </p>
+      ) : delivery === "failed" ? (
+        <p role="status" className="text-sm text-destructive">
+          {gt("Send failed. Edit and approve a new revision to try again.")}
+        </p>
+      ) : null}
+      {edit && canEdit ? (
         <form
           className="space-y-2"
           onSubmit={(event) => {
@@ -115,29 +165,43 @@ export function GmailReplyDraft({
       ) : (
         <>
           <p className="text-sm wrap-anywhere whitespace-pre-wrap select-text">{current.body}</p>
-          {canWrite ? (
+          {canSend ? (
+            <p className="text-xs text-muted-foreground">
+              {gt("The reply includes the latest message as quoted text.")}
+            </p>
+          ) : null}
+          {canSend || canEdit ? (
             <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  setError(undefined);
-                  setEdit({ body: current.body, revision: current.revision });
-                }}
-              >
-                {gt("Edit draft")}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => void update(current.revision, { kind: "dismiss" })}
-              >
-                {gt("Dismiss draft")}
-              </Button>
+              {canSend ? (
+                <Button type="button" size="sm" disabled={busy} onClick={() => void approve()}>
+                  {operation === "send" ? gt("Sending…") : gt("Approve & send")}
+                </Button>
+              ) : null}
+              {canEdit ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => {
+                    setError(undefined);
+                    setEdit({ body: current.body, revision: current.revision });
+                  }}
+                >
+                  {gt("Edit draft")}
+                </Button>
+              ) : null}
+              {canWrite && delivery == null ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void update(current.revision, { kind: "dismiss" })}
+                >
+                  {gt("Dismiss draft")}
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </>

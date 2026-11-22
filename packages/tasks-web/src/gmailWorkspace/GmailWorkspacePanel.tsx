@@ -148,6 +148,7 @@ type ThreadReaderProps = {
   readonly threadId: string;
   readonly refreshKey: string;
   readonly canWrite: boolean;
+  readonly canApprove: boolean;
   readonly onRefresh: () => void;
 };
 
@@ -157,6 +158,7 @@ function ThreadPage({
   pages,
   refreshKey,
   canWrite,
+  canApprove,
   onRefresh,
 }: ThreadReaderProps & { readonly pages: PageStack }) {
   const gt = useGT();
@@ -177,6 +179,7 @@ function ThreadPage({
     );
   }
   if (thread.data === undefined) return <PaneStatus>{gt("Loading thread…")}</PaneStatus>;
+  const { sendingAccount } = thread.data;
   return (
     <>
       {thread.data.messages.length === 0 ? (
@@ -207,6 +210,8 @@ function ThreadPage({
                   key={draft.id}
                   draft={draft}
                   canWrite={canWrite}
+                  canApprove={canApprove}
+                  sendingAccount={sendingAccount}
                   onUpdate={async (revision, change) => {
                     const updated = await api.updateDraft({
                       gmailThreadId: threadId,
@@ -216,6 +221,15 @@ function ThreadPage({
                     });
                     onRefresh();
                     return updated;
+                  }}
+                  onApprove={async (revision) => {
+                    const status = await api.approveDraft({
+                      gmailThreadId: threadId,
+                      draftId: draft.id,
+                      revision,
+                    });
+                    onRefresh();
+                    return status;
                   }}
                 />
               ) : null}
@@ -238,11 +252,13 @@ function Workspace({
   layout,
   completedAt,
   canWrite,
+  canApprove,
 }: {
   readonly api: Api;
   readonly layout: GmailWorkspaceLayout;
   readonly completedAt: string | null | undefined;
   readonly canWrite: boolean;
+  readonly canApprove: boolean;
 }) {
   const gt = useGT();
   const pages = usePageStack();
@@ -290,6 +306,7 @@ function Workspace({
                   threadId={selectedThread}
                   refreshKey={refreshKey}
                   canWrite={canWrite}
+                  canApprove={canApprove}
                   onRefresh={refresh}
                 />
               )}
@@ -314,11 +331,23 @@ function SavedWorkspace({
     environmentId,
     GMAIL_WORKSPACE_RPC_METHODS.updateDraft,
   );
+  const canApprove = useExperimentalFeatureRpcPermission(
+    environmentId,
+    GMAIL_WORKSPACE_RPC_METHODS.approveDraft,
+  );
   if (layout.error) return <PaneStatus error>{layout.error}</PaneStatus>;
   if (layout.data === undefined) return <PaneStatus>{gt("Loading Gmail workspace…")}</PaneStatus>;
   if (layout.data === null)
     return <PaneStatus>{gt("Ask this bot to create a Gmail workspace.")}</PaneStatus>;
-  return <Workspace api={api} layout={layout.data} completedAt={refreshKey} canWrite={canWrite} />;
+  return (
+    <Workspace
+      api={api}
+      layout={layout.data}
+      completedAt={refreshKey}
+      canWrite={canWrite}
+      canApprove={canApprove}
+    />
+  );
 }
 
 export default function GmailWorkspacePanel({

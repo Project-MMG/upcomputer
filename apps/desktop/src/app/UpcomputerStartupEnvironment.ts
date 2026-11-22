@@ -1,5 +1,8 @@
 import { applyUpcomputerEnvAliases } from "@t3tools/shared/upcomputerEnv";
-import { resolveUpcomputerLocalBuildIdentity } from "@t3tools/shared/upcomputerIdentity";
+import {
+  resolveUpcomputerLocalBuildIdentity,
+  UPCOMPUTER_PRIVATE_ALPHA_APP_ID,
+} from "@t3tools/shared/upcomputerIdentity";
 
 /**
  * Applies the Up.computer process environment before anything reads it.
@@ -14,10 +17,16 @@ export function applyUpcomputerStartupEnvironment(input: {
 }): void {
   const { env } = input;
   applyUpcomputerEnvAliases(env);
-  // A local test or demo build never shares the Alpha app's state, port or updater.
+  // Local builds carry their own state, port, and updater settings.
   const localBuild = resolveUpcomputerLocalBuildIdentity(input.appVersion);
   if (localBuild) {
-    env.T3CODE_HOME = input.joinPath(input.homeDirectory, localBuild.homeDirectoryName);
+    const smokeRoot =
+      localBuild.appId === UPCOMPUTER_PRIVATE_ALPHA_APP_ID
+        ? env.T3CODE_PRIVATE_ALPHA_SMOKE_ROOT?.trim()
+        : undefined;
+    env.T3CODE_HOME = smokeRoot
+      ? input.joinPath(smokeRoot, "server")
+      : input.joinPath(input.homeDirectory, localBuild.homeDirectoryName);
     env.T3CODE_DISABLE_AUTO_UPDATE = "true";
     delete env.VITE_DEV_SERVER_URL;
     delete env.T3CODE_PORT;

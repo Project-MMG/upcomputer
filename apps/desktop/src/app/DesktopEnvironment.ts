@@ -20,6 +20,7 @@ import type { OtlpProtocol } from "@t3tools/shared/observability";
 import {
   resolveUpcomputerLocalBuildIdentity,
   UPCOMPUTER_APP_ID,
+  UPCOMPUTER_PRIVATE_ALPHA_APP_ID,
   UPCOMPUTER_PRODUCT_NAME,
 } from "@t3tools/shared/upcomputerIdentity";
 
@@ -158,7 +159,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const appDataDirectory =
+  const platformAppDataDirectory =
     input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
           path.join(homeDirectory, "AppData", "Roaming"),
@@ -166,6 +167,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
+  const localBuild = resolveUpcomputerLocalBuildIdentity(input.appVersion);
+  const appDataDirectory =
+    localBuild?.appId === UPCOMPUTER_PRIVATE_ALPHA_APP_ID
+      ? Option.getOrElse(config.privateAlphaSmokeRoot, () => platformAppDataDirectory)
+      : platformAppDataDirectory;
   const baseDir = resolveDesktopBaseDir({
     homeDirectory,
     joinPath: path.join,

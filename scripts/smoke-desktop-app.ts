@@ -22,17 +22,19 @@ const { values } = NodeUtil.parseArgs({
     // An unpackaged app directory for a plain Electron executable, as PR CI runs it.
     app: { type: "string" },
     "artifacts-dir": { type: "string" },
+    "private-alpha": { type: "boolean" },
   },
 });
 const executable = values.executable;
 if (!executable)
   throw new Error(
-    "Usage: smoke-desktop-app.ts --executable <app> [--app <dir>] [--artifacts-dir <dir>]",
+    "Usage: smoke-desktop-app.ts --executable <app> [--app <dir>] [--artifacts-dir <dir>] [--private-alpha]",
   );
 const artifactsDir = NodePath.resolve(values["artifacts-dir"] ?? "desktop-launch-check");
 
 const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-launch-"));
-const t3Home = NodePath.join(home, "t3");
+const privateAlpha = values["private-alpha"] ?? false;
+const t3Home = NodePath.join(home, privateAlpha ? "server" : "t3");
 NodeFS.mkdirSync(NodePath.join(t3Home, "userdata"), { recursive: true });
 NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
 
@@ -42,7 +44,11 @@ try {
   app = await _electron.launch({
     executablePath: executable,
     // Linux CI runners do not allow the Chromium sandbox's user namespaces.
-    args: [...(values.app ? [NodePath.resolve(values.app)] : []), "--no-sandbox"],
+    args: [
+      ...(values.app ? [NodePath.resolve(values.app)] : []),
+      "--no-sandbox",
+      ...(privateAlpha ? ["--use-mock-keychain"] : []),
+    ],
     // HOME stays real: on macOS a fake HOME has no login keychain, and safeStorage blocks the
     // main process on a keychain dialog. macOS keeps its Electron profile in the runner's HOME.
     env: {
@@ -52,6 +58,7 @@ try {
       T3CODE_HOME: t3Home,
       T3CODE_TELEMETRY_ENABLED: "false",
       T3CODE_DISABLE_AUTO_UPDATE: "true",
+      ...(privateAlpha ? { T3CODE_PRIVATE_ALPHA_SMOKE_ROOT: home } : {}),
     },
     timeout: STEP_TIMEOUT_MS,
   });
@@ -59,6 +66,16 @@ try {
   // thread wait below fails either way and its screenshot shows the startup error.
   step = "waiting for the first window";
   const page = await app.firstWindow({ timeout: STEP_TIMEOUT_MS });
+  if (privateAlpha) {
+    step = "checking private Alpha profile isolation";
+    const paths = await app.evaluate(({ app: desktop }) => ({
+      server: process.env.T3CODE_HOME,
+      profile: desktop.getPath("userData"),
+    }));
+    if (paths.server !== t3Home || !paths.profile.startsWith(home + NodePath.sep)) {
+      throw new Error("Private Alpha smoke test must use isolated directories.");
+    }
+  }
   try {
     step = `finding "${THREAD_TITLE}" in the sidebar`;
     const thread = page.locator("li[data-thread-item]", { hasText: THREAD_TITLE });

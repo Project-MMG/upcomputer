@@ -4,6 +4,42 @@
 
 This document covers the unified release workflow for stable and nightly desktop releases.
 
+## Project-MMG private Alpha
+
+Ship completed features and approved merges to the installed private Alpha. Build the verified
+commit from the Project-MMG fork and increment the installed `privatealpha` build number. Record
+the commit and installed version with the work.
+
+1. Build the macOS app from the release checkout with the repo's pinned Node and package manager.
+
+   ```sh
+   alpha_version=0.0.39-privatealpha.7
+   alpha_artifacts="$(mktemp -d "${TMPDIR:-/tmp}/upcomputer-private-alpha.XXXXXX")"
+   vp run dist:desktop:artifact --platform mac --target dir --arch arm64 \
+     --build-version "$alpha_version" --output-dir "$alpha_artifacts"
+   ```
+
+2. Check that the candidate and the existing install have bundle ID
+   `computer.up.upcomputer.privatealpha`. Sign the candidate using the installed app's signing
+   method and verify the signature. For a locally ad hoc signed install, use the commands below.
+
+   ```sh
+   alpha_candidate="$alpha_artifacts/mac-arm64/Up.computer (Alpha Private).app"
+   codesign --force --deep --sign - "$alpha_candidate"
+   codesign --verify --deep --strict "$alpha_candidate"
+   node scripts/smoke-desktop-app.ts --private-alpha \
+     --executable "$alpha_candidate/Contents/MacOS/Up.computer (Alpha Private)" \
+     --artifacts-dir "$alpha_artifacts/smoke"
+   ```
+
+3. Once the smoke test passes and active work has finished, quit Alpha normally. Keep the prior
+   app bundle for rollback and install the candidate at `/Applications/Up.computer (Alpha).app`.
+   Reopen it and verify the new version and the changed workflow on the existing profile.
+
+Private Alpha keeps its server home at `~/.upcomputer-private-alpha` and its own Electron profile.
+The smoke test starts with temporary profiles. The installed private build is updated locally and
+uses no GitHub update feed.
+
 ## What the workflow does
 
 - Workflow: `.github/workflows/release.yml`

@@ -510,7 +510,8 @@ function GrantForm({
     assignment?.audience.kind ?? (defaultBotId ? "selected" : "all"),
   );
   const [selected, setSelected] = useState<ReadonlyArray<TaskAgentId>>(() => {
-    const assigned = assignment?.audience.kind === "selected" ? assignment.audience.botIds : [];
+    const assigned: readonly TaskAgentId[] =
+      assignment?.audience.kind === "selected" ? assignment.audience.botIds : [];
     return defaultBotId && !assigned.includes(defaultBotId)
       ? [...assigned, defaultBotId]
       : assigned;

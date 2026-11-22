@@ -15,6 +15,11 @@ it.effect.each([
   { appVersion: "0.0.45-nightly.20261005.1", isDevelopment: false, expected: "Up.computer" },
   { appVersion: "0.0.45-localtest.1", isDevelopment: false, expected: "UpComputer Local Test" },
   { appVersion: "0.0.45-demo.1", isDevelopment: false, expected: "Up.computer Demo" },
+  {
+    appVersion: "0.0.45-privatealpha.7",
+    isDevelopment: false,
+    expected: "Up.computer (Alpha Private)",
+  },
 ])("uses the V1 profile folder $expected", ({ appVersion, isDevelopment, expected }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

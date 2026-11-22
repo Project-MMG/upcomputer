@@ -97,6 +97,26 @@ describe("Up.computer desktop identity", () => {
     }),
   );
 
+  it.effect("uses the isolated private Alpha profile for a packaged smoke run", () =>
+    Effect.gen(function* () {
+      const appVersion = "0.0.46-privatealpha.7";
+      const env = { T3CODE_PRIVATE_ALPHA_SMOKE_ROOT: "/test/alpha" };
+      const input = { env, appVersion, homeDirectory: "/Users/alice", joinPath: posixJoin };
+      applyUpcomputerStartupEnvironment(input);
+      const smoke = yield* makeEnvironment(appVersion, env);
+      assert.equal(smoke.baseDir, "/test/alpha/server");
+      assert.equal(smoke.appDataDirectory, "/test/alpha");
+      assert.equal(smoke.appUserModelId, "computer.up.upcomputer.privatealpha");
+      assert.equal(smoke.displayName, "Up.computer (Alpha Private)");
+
+      const installedEnv = {};
+      applyUpcomputerStartupEnvironment({ ...input, env: installedEnv });
+      const installed = yield* makeEnvironment(appVersion, installedEnv);
+      assert.equal(installed.baseDir, "/Users/alice/.upcomputer-private-alpha");
+      assert.equal(installed.appDataDirectory, "/Users/alice/Library/Application Support");
+    }),
+  );
+
   it.effect("isolates a demo build from the Alpha and local test apps", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = {

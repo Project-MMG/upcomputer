@@ -120,7 +120,8 @@ The dev runner seeds a worktree's empty database from upstream's `~/.t3/userdata
 - Open PRs for work approved for GitHub. Use the repository's default branch or the integration branch named on the issue. Stack dependent PRs on the branch that contains their verified prerequisite.
 - Use conventional commit and PR titles such as `fix(web): keep new threads responsive`. Explain the problem, the change, and the verification. Link the issue and report the model and harness that did the work.
 - Attach before and after evidence for UI changes to the PR. Include a short video when it demonstrates interaction or motion.
-- Keep a PR focused on its linked issue. The maintainer approves merges and release rollouts. Mark an issue complete once its change reaches the intended branch and passes acceptance.
+- Keep a PR focused on its linked issue. The maintainer approves merges and shared release rollouts. Mark an issue complete once its change reaches the intended branch and passes acceptance.
+- Finish Project-MMG feature and merge rollouts by smoke-testing, installing, and verifying the updated [private Alpha](docs/operations/release.md#project-mmg-private-alpha). Report the installed version and source commit.
 - Use `watch_pull_request` when asked to monitor a PR in Up.computer. Verify bot findings against the source before acting on them.
 
 ## Documentation

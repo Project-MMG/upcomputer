@@ -59,13 +59,14 @@ function isUpcomputerLocalTestVersion(version: string): boolean {
 const UPCOMPUTER_DEMO_APP_NAME = "Up.computer Demo";
 const UPCOMPUTER_DEMO_APP_ID = "computer.up.upcomputer.demo";
 const UPCOMPUTER_DEMO_HOME_DIRECTORY_NAME = ".upcomputer-demo";
+export const UPCOMPUTER_PRIVATE_ALPHA_APP_ID = "computer.up.upcomputer.privatealpha";
 
 function isUpcomputerDemoVersion(version: string): boolean {
   return /^\d+\.\d+\.\d+-demo\.\d+$/.test(version);
 }
 
 /**
- * The separate identity of a local build (local test or demo): app and
+ * The separate identity of a local build (private Alpha, local test, or demo): app and
  * Electron profile name, bundle id and home directory. `undefined` for
  * Alpha, nightly and dev builds, which keep the V1 identity.
  */
@@ -80,6 +81,14 @@ export interface UpcomputerLocalBuildIdentity {
 export function resolveUpcomputerLocalBuildIdentity(
   version: string,
 ): UpcomputerLocalBuildIdentity | undefined {
+  if (/^\d+\.\d+\.\d+-privatealpha\.\d+$/.test(version)) {
+    return {
+      appName: "Up.computer (Alpha Private)",
+      menuBarName: UPCOMPUTER_DESKTOP_PRODUCT_NAME,
+      appId: UPCOMPUTER_PRIVATE_ALPHA_APP_ID,
+      homeDirectoryName: ".upcomputer-private-alpha",
+    };
+  }
   if (isUpcomputerLocalTestVersion(version)) {
     return {
       appName: UPCOMPUTER_LOCAL_TEST_APP_NAME,

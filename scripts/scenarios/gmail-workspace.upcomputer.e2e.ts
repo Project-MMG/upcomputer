@@ -146,7 +146,8 @@ const seedEmailBot = Effect.fn("GmailWorkspaceScenario.seedEmailBot")(function* 
       role: "Coordinator",
       modelSelection,
       runtimeMode: "approval-required",
-      instructions: "Coordinate work in VT Home Repo.",
+      instructions:
+        "Coordinate work in VT Home Repo. Read AGENTS.md and bots/email/AGENTS.md for the workspace fixture.",
     },
   });
   const connector = { projectId, app: "gmail" };
@@ -326,7 +327,7 @@ test(
     await expect(screen.getByText("No tools assigned to Chief.")).toBeVisible();
     await expect(threadRead).toBeHidden();
     await expect(inboxRead).toBeHidden();
-    await expect(screen.getByRole("button", "Manage access")).toBeHidden();
+    await expect(screen.getByRole("button", "Manage access")).toHaveCount(0);
     await appsTab.tap();
     await expect(screen.getByText("This bot has no saved apps yet.")).toBeVisible();
 

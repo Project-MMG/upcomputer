@@ -7,7 +7,10 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSessionId,
+  ComposerContextId,
   EnvironmentId,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2Run,
   ProjectId,
   RunId,
   RpcScopeAuthorization,
@@ -18,6 +21,7 @@ import {
 import {
   GMAIL_WORKSPACE_RPC_METHODS,
   GmailWorkspaceRpcGroup,
+  type GmailWorkspaceAnnotationInput,
   TaskAgentId,
   TaskAgentRunId,
 } from "@t3tools/tasks-contracts/v1";
@@ -144,6 +148,7 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
     saveWorkspace: (args: Schema.JsonObject) => call("gmail_workspace_save", args),
     checkWorkspace: () => call("gmail_workspace_check", {}),
     recordReply: (args: Schema.JsonObject) => call("gmail_workspace_record_reply", args),
+    applyAnnotation: (args: Schema.JsonObject) => call("gmail_workspace_apply_annotation", args),
     read: (slug: string, args: Schema.JsonObject = {}) =>
       call("project_tool_read", { slug, arguments: args }),
     write: (slug: string, args: Schema.JsonObject = {}) =>
@@ -158,6 +163,7 @@ class Fixture extends Context.Service<
     readonly backend: ReturnType<typeof makeComposioFixture>;
     readonly shells: Map<ThreadId, OrchestrationV2ThreadShell>;
     readonly scheduledThreads: ThreadId[];
+    readonly annotationMessages: Map<ThreadId, OrchestrationV2ConversationMessage>;
     readonly enableComposio: () => void;
     readonly authenticate: (id: ThreadId) => ReturnType<typeof mcpSession>;
   }
@@ -170,6 +176,8 @@ const fixtureLayer = Layer.unwrap(
     const scopes = new Map<string, McpThreadInvocationScope>();
     const receipts = new Set<string>();
     const scheduledThreads: ThreadId[] = [];
+    const annotationRuns = new Map<ThreadId, OrchestrationV2Run>();
+    const annotationMessages = new Map<ThreadId, OrchestrationV2ConversationMessage>();
     let hasKey = false;
     const configuration = Layer.mergeAll(
       NodeCrypto.layer,
@@ -183,6 +191,19 @@ const fixtureLayer = Layer.unwrap(
       Layer.mock(ThreadManagementService)({
         getThreadShell: (id) => Effect.sync(() => shells.get(id) ?? null),
         getThreadRecords: (id) => Effect.sync(() => idleThreadProjection(shells.get(id)!)),
+        getProjectThreadRecords: ({ threadId }, _fields, filter) =>
+          Effect.sync(() => {
+            const run = annotationRuns.get(threadId);
+            return {
+              ...idleThreadProjection(shells.get(threadId)!),
+              runs: run && filter?.runIds?.includes(run.id) ? [run] : [],
+            };
+          }),
+        getMessagesById: (threadId, ids) =>
+          Effect.sync(() => {
+            const message = annotationMessages.get(threadId);
+            return new Map(message && ids.includes(message.id) ? [[message.id, message]] : []);
+          }),
         hasReceipt: (id) => Effect.sync(() => receipts.has(id)),
         dispatch: (command) =>
           Effect.sync(() => {
@@ -205,13 +226,47 @@ const fixtureLayer = Layer.unwrap(
           }),
         sendToThread: (input) =>
           Effect.sync(() => {
-            expect(input.scheduledTaskId).toBeDefined();
-            scheduledThreads.push(input.threadId);
             const shell = shells.get(input.threadId)!;
+            if (input.scheduledTaskId !== undefined) scheduledThreads.push(input.threadId);
+            const runId = RunId.make(`test:${input.messageId}`);
             shells.set(input.threadId, {
               ...shell,
-              activeRunId: RunId.make(`scheduled:${input.messageId}`),
+              activeRunId: runId,
             });
+            if (input.context) {
+              annotationRuns.set(input.threadId, {
+                id: runId,
+                threadId: input.threadId,
+                ordinal: 1,
+                providerInstanceId: shell.modelSelection.instanceId,
+                modelSelection: shell.modelSelection,
+                providerThreadId: null,
+                userMessageId: input.messageId,
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "running",
+                requestedAt: shell.updatedAt,
+                startedAt: shell.updatedAt,
+                completedAt: null,
+                checkpointId: null,
+                contextHandoffId: null,
+              });
+              annotationMessages.set(input.threadId, {
+                id: input.messageId,
+                threadId: input.threadId,
+                runId,
+                nodeId: null,
+                role: "user",
+                createdBy: input.createdBy,
+                creationSource: input.creationSource,
+                text: input.text,
+                context: input.context,
+                attachments: [],
+                streaming: false,
+                createdAt: shell.updatedAt,
+                updatedAt: shell.updatedAt,
+              });
+            }
             return {} as never;
           }),
       }),
@@ -289,6 +344,7 @@ const fixtureLayer = Layer.unwrap(
         backend,
         shells,
         scheduledThreads,
+        annotationMessages,
         enableComposio: () => {
           hasKey = true;
         },
@@ -334,6 +390,7 @@ const code = (result: {
 
 const approvalSession = AuthSessionId.make("gmail-reviewer");
 const approveMethod = GMAIL_WORKSPACE_RPC_METHODS.approveDraft;
+const annotateMethod = GMAIL_WORKSPACE_RPC_METHODS.annotate;
 const gmailWorkspaceClient = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
   RpcTest.makeClient(GmailWorkspaceRpcGroup.middleware(RpcScopeAuthorization)).pipe(
     Effect.provide(
@@ -418,13 +475,13 @@ it.effect("saves and replaces a bot's Gmail layout and reads the project's conne
     const initial = { title: "VT Inbox", order: "inbox-first" } as const;
     const revised = { title: "VT Customer Mail", order: "thread-first" } as const;
     expect(content(yield* api.saveWorkspace(initial))).toEqual(initial);
-    expect(yield* workspace.layout(target)).toEqual(initial);
+    expect(yield* workspace.layout(target)).toEqual({ ...initial, revision: 1 });
     expect(content(yield* api.saveWorkspace(revised))).toEqual(revised);
     expect((yield* api.saveWorkspace({ ...revised, order: "side-by-side" })).isError).toBe(true);
 
     const shell = shells.get(bot.threadId)!;
     shells.set(bot.threadId, { ...shell, activeRunId: null });
-    expect(yield* workspace.layout(target)).toEqual(revised);
+    expect(yield* workspace.layout(target)).toEqual({ ...revised, revision: 2 });
     const connection = { projectId: firstProject, app: "gmail" };
     for (const projectId of [secondProject, firstProject]) {
       yield* tools.connection({ ...connection, projectId, operation: "start" });
@@ -641,8 +698,147 @@ it.effect("rejects mismatched bot chats, revoked Gmail access and conflicting fi
     yield* tools.grant({ ...grant, slug: gmailListAction });
     yield* tools.connection({ ...connection, operation: "disconnect" });
     expect((yield* Effect.flip(workspace.inbox(target))).code).toBe("account-unavailable");
-    expect(yield* workspace.layout(target)).toEqual(layout);
+    expect(yield* workspace.layout(target)).toEqual({ ...layout, revision: 1 });
     expect(backend.calls).toEqual([]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("revises only the annotation's exact draft range in the owning bot turn", () =>
+  Effect.gen(function* () {
+    const { approval, grant, mcp, sends } = yield* queuedReply();
+    const { annotationMessages, authenticate } = yield* Fixture;
+    const workspace = yield* GmailWorkspace.GmailWorkspace;
+    const tools = yield* ProjectTools.ProjectTools;
+    const reader = yield* gmailWorkspaceClient([AuthOrchestrationReadScope]);
+    const operator = yield* gmailWorkspaceClient([AuthOrchestrationOperateScope]);
+    const other = yield* addBot("Other Email", secondProject);
+    const otherMcp = yield* authenticate(other.threadId);
+    const { draftId, gmailThreadId, revision, ...owner } = approval;
+    const target = {
+      kind: "draft",
+      draftId,
+      gmailThreadId,
+      revision,
+      start: 7,
+      text: "for your",
+    } as const;
+    const input = { ...owner, target, note: "Use “for the” here." };
+    expect((yield* Effect.flip(reader[annotateMethod](input)))._tag).toBe(
+      "EnvironmentAuthorizationError",
+    );
+    for (const mismatch of [
+      { projectId: other.projectId },
+      { botId: other.agent.id },
+      { threadId: other.threadId },
+    ]) {
+      expect(yield* Effect.flip(operator[annotateMethod]({ ...input, ...mismatch }))).toMatchObject(
+        {
+          code: "not-a-bot",
+        },
+      );
+    }
+    expect(
+      yield* Effect.flip(
+        operator[annotateMethod]({
+          ...input,
+          target: { ...target, gmailThreadId: receipt.threadId },
+        }),
+      ),
+    ).toMatchObject({ code: "workspace-draft-changed" });
+    expect(
+      yield* Effect.flip(
+        operator[annotateMethod]({
+          ...input,
+          target: { ...target, start: 0 },
+        }),
+      ),
+    ).toMatchObject({ code: "workspace-annotation-invalid" });
+    yield* operator[annotateMethod](input);
+    const message = annotationMessages.get(owner.threadId)!;
+    const annotationId = ComposerContextId.make(message.id);
+    expect(message.text).toContain(input.note);
+    expect(message.context?.records).toMatchObject([
+      {
+        contextId: annotationId,
+        payload: { ...owner, target },
+      },
+    ]);
+    const edit = { annotationId, change: { replacement: "for the" } };
+    expect(code(yield* otherMcp.applyAnnotation(edit))).toBe("workspace-annotation-required");
+    expect(
+      code(
+        yield* mcp.applyAnnotation({
+          annotationId,
+          change: { position: "first" },
+        }),
+      ),
+    ).toBe("workspace-annotation-invalid");
+
+    const newer = yield* workspace.updateDraft({
+      ...approval,
+      change: { kind: "edit", body: "Thanks for your message. Here is my own edit." },
+    });
+    expect(code(yield* mcp.applyAnnotation(edit))).toBe("workspace-draft-changed");
+    expect((yield* workspace.thread(approval)).messages.at(-1)?.draft?.body).toBe(newer.body);
+
+    yield* operator[annotateMethod]({ ...input, target: { ...target, revision: newer.revision } });
+    expect(code(yield* mcp.applyAnnotation(edit))).toBe("workspace-annotation-required");
+    const currentEdit = { ...edit, annotationId: annotationMessages.get(owner.threadId)!.id };
+    const readGrant = { ...grant, slug: gmailThreadAction };
+    yield* tools.grant({ ...readGrant, audience: null });
+    expect(code(yield* mcp.applyAnnotation(currentEdit))).toBe("not-assigned");
+    yield* tools.grant(readGrant);
+    expect(content(yield* mcp.applyAnnotation(currentEdit))).toMatchObject({
+      id: draftId,
+      body: "Thanks for the message. Here is my own edit.",
+      revision: newer.revision + 1,
+      status: "pending",
+    });
+    expect(code(yield* mcp.applyAnnotation(currentEdit))).toBe("workspace-draft-changed");
+    expect(
+      yield* Effect.flip(operator[approveMethod]({ ...approval, revision: newer.revision })),
+    ).toMatchObject({
+      code: "workspace-draft-changed",
+    });
+    expect(sends()).toEqual([]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("moves the annotated Gmail control while preserving a newer layout", () =>
+  Effect.gen(function* () {
+    const workspace = yield* GmailWorkspace.GmailWorkspace;
+    const { annotationMessages, authenticate, shells } = yield* Fixture;
+    const bot = yield* addBot("Email layout", firstProject);
+    const mcp = yield* authenticate(bot.threadId);
+    const owner = { projectId: bot.projectId, botId: bot.agent.id, threadId: bot.threadId };
+    const original = { title: "Mail", order: "thread-first" } as const;
+    const newer = { title: "Newer mail layout", order: "thread-first" } as const;
+    const originalTurn = shells.get(bot.threadId)!;
+    yield* mcp.saveWorkspace(original);
+    const input = {
+      ...owner,
+      target: { kind: "layout", control: "inbox", order: original.order, revision: 1 },
+      note: "Move the inbox above the thread reader.",
+    } satisfies GmailWorkspaceAnnotationInput;
+    yield* workspace.annotate(input);
+    const edit = {
+      annotationId: annotationMessages.get(bot.threadId)!.id,
+      change: { position: "first" },
+    };
+    expect(code(yield* mcp.saveWorkspace(newer))).toBe("workspace-annotation-required");
+    const annotationTurn = shells.get(bot.threadId)!;
+    shells.set(bot.threadId, originalTurn);
+    expect(content(yield* mcp.saveWorkspace(newer))).toEqual(newer);
+    shells.set(bot.threadId, annotationTurn);
+    expect(code(yield* mcp.applyAnnotation(edit))).toBe("workspace-layout-changed");
+    expect(yield* workspace.layout(owner)).toEqual({ ...newer, revision: 2 });
+    expect((yield* Effect.flip(workspace.annotate(input))).code).toBe("workspace-layout-changed");
+
+    yield* workspace.annotate({ ...input, target: { ...input.target, revision: 2 } });
+    const currentEdit = { ...edit, annotationId: annotationMessages.get(bot.threadId)!.id };
+    const expected = { ...newer, order: "inbox-first", revision: 3 };
+    expect(content(yield* mcp.applyAnnotation(currentEdit))).toEqual(expected);
+    expect(yield* workspace.layout(owner)).toEqual(expected);
   }).pipe(Effect.provide(testLayer)),
 );
 

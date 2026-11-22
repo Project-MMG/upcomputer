@@ -5,6 +5,12 @@ export const gmailListAction = "GMAIL_FETCH_EMAILS";
 export const gmailThreadAction = "GMAIL_FETCH_MESSAGE_BY_THREAD_ID";
 export const gmailReplyAction = "GMAIL_REPLY_TO_THREAD";
 export const gmailFixtureSender = "support@vt.example.test";
+export const gmailFixtureEditedReply =
+  "Hi Jordan, I’ll verify the delivery date and follow up this afternoon.";
+export const gmailFixtureSelectedText = "the delivery date";
+export const gmailFixtureReplacement = "the updated delivery date";
+export const gmailFixtureDraftNote = "Say that we’ll verify the updated delivery date.";
+export const gmailFixtureLayoutNote = "Move the inbox above the thread reader.";
 
 export const gmailApp = {
   slug: "gmail",

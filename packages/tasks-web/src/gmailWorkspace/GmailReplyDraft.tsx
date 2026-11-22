@@ -5,20 +5,37 @@ import {
   type GmailReplyDraft as ReplyDraft,
 } from "@t3tools/tasks-contracts/v1";
 import { useGT } from "gt-react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
 import { Textarea } from "../../../../apps/web/src/components/ui/textarea.tsx";
 import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
+import { GmailAnnotationPopover, type AnnotateGmailWorkspace } from "./GmailAnnotationPopover.tsx";
+
+function selectedDraftText(element: HTMLParagraphElement, body: string) {
+  const selection = element.ownerDocument.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return null;
+  const prefix = element.ownerDocument.createRange();
+  prefix.selectNodeContents(element);
+  prefix.setEnd(range.startContainer, range.startOffset);
+  const start = prefix.toString().length;
+  const text = range.toString();
+  return text.trim() && body.slice(start, start + text.length) === text ? { start, text } : null;
+}
 
 export function GmailReplyDraft({
   draft,
+  gmailThreadId,
   canWrite,
   canApprove,
   sendingAccount,
   onUpdate,
   onApprove,
+  onAnnotate,
 }: {
   readonly draft: ReplyDraft;
+  readonly gmailThreadId: string;
   readonly canWrite: boolean;
   readonly canApprove: boolean;
   readonly sendingAccount: string | undefined;
@@ -27,9 +44,11 @@ export function GmailReplyDraft({
     change: GmailDraftUpdateInput["change"],
   ) => Promise<ReplyDraft>;
   readonly onApprove: (revision: number) => Promise<GmailReplyDeliveryStatus>;
+  readonly onAnnotate: AnnotateGmailWorkspace | undefined;
 }) {
   const gt = useGT();
   const fieldId = useId();
+  const bodyRef = useRef<HTMLParagraphElement>(null);
   const [saved, setSaved] = useState<ReplyDraft>();
   const current =
     saved &&
@@ -164,7 +183,9 @@ export function GmailReplyDraft({
         </form>
       ) : (
         <>
-          <p className="text-sm wrap-anywhere whitespace-pre-wrap select-text">{current.body}</p>
+          <p ref={bodyRef} className="text-sm wrap-anywhere whitespace-pre-wrap select-text">
+            {current.body}
+          </p>
           {canSend ? (
             <p className="text-xs text-muted-foreground">
               {gt("The reply includes the latest message as quoted text.")}
@@ -190,6 +211,25 @@ export function GmailReplyDraft({
                 >
                   {gt("Edit draft")}
                 </Button>
+              ) : null}
+              {canEdit && onAnnotate ? (
+                <GmailAnnotationPopover
+                  label={gt("Annotate selection")}
+                  onAnnotate={onAnnotate}
+                  readTarget={() => {
+                    const selection =
+                      bodyRef.current && selectedDraftText(bodyRef.current, current.body);
+                    return selection
+                      ? {
+                          kind: "draft",
+                          gmailThreadId,
+                          draftId: current.id,
+                          revision: current.revision,
+                          ...selection,
+                        }
+                      : null;
+                  }}
+                />
               ) : null}
               {canWrite && delivery == null ? (
                 <Button

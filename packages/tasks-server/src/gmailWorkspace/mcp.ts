@@ -2,6 +2,7 @@ import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   GmailInboxCheck,
   GmailInboxDecision,
+  GmailWorkspaceAnnotationEdit,
   GmailWorkspaceLayout,
   type ProjectToolError,
 } from "@t3tools/tasks-contracts/v1";
@@ -27,7 +28,7 @@ const inThread = () => {
 const toolkit = Toolkit.make(
   Tool.make("gmail_workspace_save", {
     description:
-      "Save or replace the Gmail workspace for this bot's permanent chat. Set its title and choose inbox-first or thread-first to place the inbox list and thread reader. The user can open Gmail inbox beside this chat.",
+      "Save or replace the Gmail workspace for this bot's permanent chat. Set its title and choose inbox-first or thread-first to place the inbox list and thread reader. For a Gmail workspace annotation, use gmail_workspace_apply_annotation.",
     parameters: GmailWorkspaceLayout,
     success: McpSchema.CallToolResult,
     failure: OrchestratorMcpFailure,
@@ -57,6 +58,17 @@ const toolkit = Toolkit.make(
   })
     .annotate(Tool.Readonly, false)
     .annotate(Tool.Idempotent, true)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
+  Tool.make("gmail_workspace_apply_annotation", {
+    description:
+      "Apply the user's Gmail workspace annotation from the current turn. Pass its gmail-workspace-annotation context ref as annotationId. For draft text, pass change.replacement for the exact selected text only. For a layout control, pass change.position as first or last. The tool saves only against the annotated revision. If it changed, ask the user to select it again. A revised draft needs user review and approval in the pane.",
+    parameters: GmailWorkspaceAnnotationEdit,
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, false)
     .annotate(McpSchema.EnabledWhen, inThread)
     .addDependency(McpInvocationContext)
     .addDependency(ThreadManagementService),
@@ -92,6 +104,11 @@ const handlers = McpToolAccess.toLayer(
       gmail_workspace_record_reply: McpToolAccess.actsAsCaller((decision) =>
         Effect.flatMap(McpInvocationContext, (caller) =>
           result(workspace.record(caller, decision)),
+        ),
+      ),
+      gmail_workspace_apply_annotation: McpToolAccess.actsAsCaller((edit) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(workspace.applyAnnotation(caller, edit)),
         ),
       ),
     };

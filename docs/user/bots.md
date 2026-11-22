@@ -107,8 +107,8 @@ that bot under **Individual actions**. If the bot uses a Home Repo, point its in
 shared `AGENTS.md` and its own playbook. Ask the bot in its chat to set up a Gmail workspace.
 
 After the bot saves the layout, choose **Gmail inbox** in the chat. Open an email to read its
-thread. Ask the bot to rearrange the inbox and thread reader if you want a different layout. The
-saved layout opens again from the same chat.
+thread. Use the annotation button next to **Inbox** or **Thread reader** to ask the bot to move
+that control. The saved layout opens again from the same chat.
 
 To check for mail in the background, ask the bot to set up a scheduled prompt in its own chat.
 Have the prompt read the bot's playbook, check the Gmail workspace, and draft replies for messages
@@ -117,6 +117,9 @@ that need one. Enable it in **Settings → Scheduled prompts**.
 The inbox marks threads with a reply ready for review. Open a thread to read the draft, edit and
 save it, or dismiss it. Later checks keep the version you saved and remember which drafts you
 dismissed. You can restore a dismissed draft from the same message.
+
+Highlight a passage in the saved reply and choose **Annotate selection** to send the bot a note.
+Review the revised reply in the same pane before approving it.
 
 Assign **Reply to email thread** to let the workspace send replies you approve. Review the sending
 account, recipient, and saved reply in the thread, then choose **Approve & send**. If delivery is

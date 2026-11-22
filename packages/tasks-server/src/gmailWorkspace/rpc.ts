@@ -24,6 +24,7 @@ export const GMAIL_WORKSPACE_RPC_CONTRIBUTION = defineNamespacedRpcContribution(
     [M.thread]: AuthOrchestrationReadScope,
     [M.updateDraft]: AuthOrchestrationOperateScope,
     [M.approveDraft]: AuthOrchestrationOperateScope,
+    [M.annotate]: AuthOrchestrationOperateScope,
   },
   handlers: ({ currentSessionId }) =>
     GmailWorkspaceRpcGroup.toLayer(
@@ -40,6 +41,8 @@ export const GMAIL_WORKSPACE_RPC_CONTRIBUTION = defineNamespacedRpcContribution(
           Effect.flatMap(GmailWorkspace, (workspace) =>
             response(workspace.approveDraft(currentSessionId, input)),
           ),
+        [M.annotate]: (input) =>
+          Effect.flatMap(GmailWorkspace, (workspace) => response(workspace.annotate(input))),
       }),
     ),
 });

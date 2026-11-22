@@ -1,4 +1,11 @@
-import { ProjectId, ThreadId, TrimmedNonEmptyString } from "@t3tools/contracts";
+import {
+  ComposerContextId,
+  NonNegativeInt,
+  PositiveInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -10,6 +17,12 @@ export const GmailWorkspaceLayout = Schema.Struct({
   order: Schema.Literals(["inbox-first", "thread-first"]),
 });
 export type GmailWorkspaceLayout = typeof GmailWorkspaceLayout.Type;
+
+const GmailWorkspaceSavedLayout = Schema.Struct({
+  ...GmailWorkspaceLayout.fields,
+  revision: Schema.optionalKey(PositiveInt),
+});
+export type GmailWorkspaceSavedLayout = typeof GmailWorkspaceSavedLayout.Type;
 
 const botChat = {
   projectId: ProjectId,
@@ -27,14 +40,13 @@ const GmailReplyBody = Schema.String.check(
   Schema.isPattern(/\S/u),
 );
 const GmailDraftId = Schema.NonEmptyString.check(Schema.isMaxLength(128));
-const GmailDraftRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 const GmailReplyDeliveryStatus = Schema.Literals(["sent", "failed", "uncertain"]);
 export type GmailReplyDeliveryStatus = typeof GmailReplyDeliveryStatus.Type;
 
 export const GmailReplyDraft = Schema.Struct({
   id: GmailDraftId,
   status: Schema.Literals(["pending", "dismissed"]),
-  revision: GmailDraftRevision,
+  revision: PositiveInt,
   recipient: Schema.String,
   body: GmailReplyBody,
   deliveryStatus: Schema.optionalKey(Schema.NullOr(GmailReplyDeliveryStatus)),
@@ -82,12 +94,12 @@ export const GmailInboxDecision = Schema.Struct({
   messageId: GmailMessageId,
   body: Schema.NullOr(GmailReplyBody),
 });
-const draftTarget = {
-  ...botChat,
+const draftVersion = {
   gmailThreadId: GmailThreadId,
   draftId: GmailDraftId,
-  revision: GmailDraftRevision,
+  revision: PositiveInt,
 };
+const draftTarget = { ...botChat, ...draftVersion };
 const approveDraftInput = Schema.Struct(draftTarget);
 export type GmailDraftApprovalInput = typeof approveDraftInput.Type;
 const updateDraftInput = Schema.Struct({
@@ -100,6 +112,48 @@ const updateDraftInput = Schema.Struct({
 });
 export type GmailDraftUpdateInput = typeof updateDraftInput.Type;
 
+const GmailWorkspaceDraftSelection = Schema.Struct({
+  kind: Schema.Literal("draft"),
+  ...draftVersion,
+  start: NonNegativeInt.check(Schema.isLessThan(GMAIL_REPLY_BODY_LIMIT)),
+  text: GmailReplyBody,
+});
+export type GmailWorkspaceDraftSelection = typeof GmailWorkspaceDraftSelection.Type;
+
+export const GmailWorkspaceControl = Schema.Literals(["inbox", "thread"]);
+export type GmailWorkspaceControl = typeof GmailWorkspaceControl.Type;
+
+const workspaceAnnotationTarget = Schema.Union([
+  GmailWorkspaceDraftSelection,
+  Schema.Struct({
+    kind: Schema.Literal("layout"),
+    control: GmailWorkspaceControl,
+    revision: PositiveInt,
+    order: GmailWorkspaceLayout.fields.order,
+  }),
+]);
+export type GmailWorkspaceAnnotationTarget = typeof workspaceAnnotationTarget.Type;
+
+export const GMAIL_WORKSPACE_ANNOTATION_CONTEXT = "gmail-workspace-annotation";
+export const GMAIL_WORKSPACE_ANNOTATION_NOTE_LIMIT = 2_000;
+export const GmailWorkspaceAnnotationContext = Schema.Struct({
+  ...botChat,
+  target: workspaceAnnotationTarget,
+});
+const annotateInput = Schema.Struct({
+  ...GmailWorkspaceAnnotationContext.fields,
+  note: TrimmedNonEmptyString.check(Schema.isMaxLength(GMAIL_WORKSPACE_ANNOTATION_NOTE_LIMIT)),
+});
+export type GmailWorkspaceAnnotationInput = typeof annotateInput.Type;
+
+export const GmailWorkspaceAnnotationEdit = Schema.Struct({
+  annotationId: ComposerContextId,
+  change: Schema.Union([
+    Schema.Struct({ replacement: Schema.String.check(Schema.isMaxLength(GMAIL_REPLY_BODY_LIMIT)) }),
+    Schema.Struct({ position: Schema.Literals(["first", "last"]) }),
+  ]),
+});
+
 export const GMAIL_WORKSPACE_RPC_NAMESPACE = "upcomputer.gmail-workspace.v1";
 export const GMAIL_WORKSPACE_RPC_METHODS = {
   layout: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.layout`,
@@ -107,13 +161,14 @@ export const GMAIL_WORKSPACE_RPC_METHODS = {
   thread: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.thread`,
   updateDraft: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.updateDraft`,
   approveDraft: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.approveDraft`,
+  annotate: `${GMAIL_WORKSPACE_RPC_NAMESPACE}.annotate`,
 } as const;
 
 const M = GMAIL_WORKSPACE_RPC_METHODS;
 export const GmailWorkspaceRpcGroup = RpcGroup.make(
   Rpc.make(M.layout, {
     payload: GmailWorkspaceTarget,
-    success: Schema.NullOr(GmailWorkspaceLayout),
+    success: Schema.NullOr(GmailWorkspaceSavedLayout),
     error: ProjectToolError,
   }),
   Rpc.make(M.inbox, { payload: inboxInput, success: inboxPage, error: ProjectToolError }),
@@ -126,6 +181,11 @@ export const GmailWorkspaceRpcGroup = RpcGroup.make(
   Rpc.make(M.approveDraft, {
     payload: approveDraftInput,
     success: GmailReplyDeliveryStatus,
+    error: ProjectToolError,
+  }),
+  Rpc.make(M.annotate, {
+    payload: annotateInput,
+    success: Schema.Void,
     error: ProjectToolError,
   }),
 );

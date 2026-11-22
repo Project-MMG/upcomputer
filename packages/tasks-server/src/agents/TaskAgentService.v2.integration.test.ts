@@ -2236,6 +2236,7 @@ it.live(
             "gmail_workspace_save",
             "gmail_workspace_check",
             "gmail_workspace_record_reply",
+            "gmail_workspace_apply_annotation",
           ]),
         );
 

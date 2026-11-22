@@ -4,6 +4,7 @@ import {
   GmailWorkspaceRpcGroup,
   type GmailDraftApprovalInput,
   type GmailDraftUpdateInput,
+  type GmailWorkspaceAnnotationInput,
   type GmailWorkspaceTarget,
 } from "@t3tools/tasks-contracts/v1";
 import { requestExperimentalFeatureRpc } from "../../../../apps/web/src/extensionApi.ts";
@@ -38,6 +39,15 @@ export function gmailWorkspaceApi(environmentId: EnvironmentId, target: GmailWor
         GmailWorkspaceRpcGroup,
         (client) => client[M.approveDraft](payload),
         { method: M.approveDraft, input: payload },
+      );
+    },
+    annotate: (input: Omit<GmailWorkspaceAnnotationInput, keyof GmailWorkspaceTarget>) => {
+      const payload = { ...target, ...input };
+      return requestExperimentalFeatureRpc(
+        environmentId,
+        GmailWorkspaceRpcGroup,
+        (client) => client[M.annotate](payload),
+        { method: M.annotate, input: payload },
       );
     },
   };

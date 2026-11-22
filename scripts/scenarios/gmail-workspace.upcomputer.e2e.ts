@@ -255,7 +255,9 @@ test(
     const ordinary = await t3.thread({ project, title: "Ordinary chat", messages: ["Hello"] });
     await t3.open(thread);
 
-    const headerGmail = screen.getByRole("button", "Open Gmail inbox");
+    const headerLaunchers = browser
+      .locator("[data-chat-header]")
+      .getByRole("button", /Gmail inbox|Bot Apps/);
     const toggleRightPanel = screen.getByRole("button", "Toggle right panel");
     const appsLauncher = screen.getByRole("button", /^Bot Apps\b/);
     const appsMenuItem = screen.getByRole("menuitem", /^Bot Apps\b/);
@@ -287,8 +289,7 @@ test(
     await openAppsFromLauncher();
     await expect(openBotApp).toBeVisible();
     await app.screenshot("bot-apps-header");
-    await expect(headerGmail).toBeHidden();
-    await expect(browser.locator("[data-chat-header] button").getByText("Bot Apps")).toBeHidden();
+    await expect(headerLaunchers).toBeHidden();
     await openBotApp.tap();
     await expect(screen.getByRole("heading", "VT Inbox")).toBeVisible();
     await closeBotApps.tap();

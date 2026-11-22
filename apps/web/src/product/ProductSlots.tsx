@@ -175,14 +175,6 @@ export function ProductChatHeaderAccessory(props: ExperimentalWebThreadAccessory
   return chatHeaderAccessoryElements(WEB_PRODUCT, props);
 }
 
-export function ProductChatToolbarAccessory(props: ExperimentalWebThreadAccessoryProps) {
-  return WEB_PRODUCT.features.flatMap((feature) =>
-    feature.chatToolbarAccessory
-      ? [createElement(feature.chatToolbarAccessory, { ...props, key: feature.id })]
-      : [],
-  );
-}
-
 export function ProductSidebarSections() {
   return WEB_PRODUCT.features.flatMap((feature) =>
     feature.sidebarSection ? [createElement(feature.sidebarSection, { key: feature.id })] : [],

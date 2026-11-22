@@ -110,8 +110,9 @@ Connect Gmail in the bot's project and assign **Fetch emails** and **Fetch Messa
 that bot under **Individual actions**. If the bot uses a Home Repo, point its instructions to the
 shared `AGENTS.md` and its own playbook. Ask the bot in its chat to set up a Gmail workspace.
 
-After the bot saves the layout, choose **Gmail inbox** in the chat, or open the saved workspace
-from **Bot Apps** in the bot's settings or right-pane menu. Open an email to read its thread.
+After the bot saves the layout, open the right pane and choose **Bot Apps**. Use **Open in right
+pane** next to the saved inbox. You can also find **Bot Apps** in the bot's settings. Open an email
+to read its thread.
 Use the annotation button next to **Inbox** or **Thread reader** to ask the bot to move that
 control.
 

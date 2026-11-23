@@ -21,6 +21,11 @@ import {
   searchApp,
   websiteReport,
 } from "../../../../scripts/scenarios/fixtures/website-bot-app-data.ts";
+import {
+  shopifyApp,
+  shopifyRead,
+  shopifyResponse,
+} from "../../../../scripts/scenarios/fixtures/shopify-store-data.ts";
 
 export const read = "FIXTURE_READ_REPO";
 export const write = "FIXTURE_CREATE_REPO_NOTE";
@@ -107,6 +112,7 @@ export const makeComposioFixture = () => {
     tool(publicRead, "List public items", ["readOnlyHint"], false, {}),
     tool(unknownEffect, "Unclassified operation", [], true, {}),
     ...gmailActions,
+    shopifyRead,
     searchAction,
     postizAction,
   ];
@@ -121,12 +127,14 @@ export const makeComposioFixture = () => {
     { slug: "public", name: "Public", no_auth: true },
     { slug: "config", name: "Needs configuration", no_auth: false },
     gmailApp,
+    shopifyApp,
     searchApp,
     postizApp,
   ];
   let sequence = 0;
   let nextWriteFailure: { readonly slug: string; readonly status: number } | undefined;
   let searchReport: unknown = websiteReport;
+  let shopifyReport: unknown = { successful: true, data: { data: shopifyResponse } };
   let nextSessionGate:
     | {
         readonly slug: string | undefined;
@@ -162,20 +170,19 @@ export const makeComposioFixture = () => {
             next_cursor: null,
           });
         }
-        const catalog = path === "/tools" ? tools : apps;
         const query = (
           url.searchParams.get("query") ??
           url.searchParams.get("search") ??
           ""
         ).toLowerCase();
         const appSlug = url.searchParams.get("toolkit_slug");
-        return paginate(
-          catalog.filter(
-            (item) =>
-              (!appSlug || ("toolkit" in item && item.toolkit.slug === appSlug)) &&
-              matchesQuery(item, query),
-          ),
-        );
+        return path === "/tools"
+          ? paginate(
+              tools.filter(
+                (item) => (!appSlug || item.toolkit.slug === appSlug) && matchesQuery(item, query),
+              ),
+            )
+          : paginate(appSlug ? [] : apps.filter((item) => matchesQuery(item, query)));
       }
       if (path.startsWith("/toolkits/")) {
         const app = apps.find(({ slug }) => path === `/toolkits/${slug}`);
@@ -185,7 +192,13 @@ export const makeComposioFixture = () => {
         const item = tools.find(({ slug }) => path === `/tools/${slug}`);
         return item ? response(item) : response({}, 404);
       }
-      if (path === "/auth_configs") return response({ items: [], next_cursor: null });
+      if (path === "/auth_configs") {
+        const items =
+          url.searchParams.get("toolkit_slug") === shopifyApp.slug
+            ? [{ id: "shopify-auth-config-fixture" }]
+            : [];
+        return response({ items, next_cursor: null });
+      }
       if (path === "/connected_accounts") {
         const account = accounts.get(url.searchParams.get("connected_account_ids") ?? "");
         if (
@@ -280,6 +293,9 @@ export const makeComposioFixture = () => {
           account,
           arguments: input.arguments,
         });
+        if (input.tool_slug === shopifyRead.slug) {
+          return response({ result_type: "completed", data: shopifyReport });
+        }
         if (input.tool_slug === nextWriteFailure?.slug) {
           const { status } = nextWriteFailure;
           nextWriteFailure = undefined;
@@ -313,6 +329,9 @@ export const makeComposioFixture = () => {
     accounts,
     catalogRequests,
     sessions,
+    setShopifyReport: (report: unknown) => {
+      shopifyReport = report;
+    },
     setSearchReport: (report: unknown) => {
       searchReport = report;
     },

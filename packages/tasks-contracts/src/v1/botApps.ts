@@ -6,6 +6,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import { TaskAgentId } from "./agents.ts";
 import { ProjectToolError } from "./projectTools.ts";
 import { TaskScheduleDate } from "./schedule.ts";
+import { ShopifyStoreReport, ShopifyStoreSource } from "./shopifyStore.ts";
 
 export const BotAppTarget = Schema.Struct({
   projectId: ProjectId,
@@ -77,6 +78,22 @@ const searchConsoleSnapshot = Schema.Struct({
     ),
   }),
 });
+
+const shopifyStoreDefinition = Schema.Struct({ title, source: ShopifyStoreSource });
+export const ShopifyStoreProposalInput = Schema.Struct({
+  ...shopifyStoreDefinition.fields,
+  replacesRevision: Schema.optionalKey(revision),
+});
+export type ShopifyStoreProposalInput = typeof ShopifyStoreProposalInput.Type;
+
+const shopifyStoreSnapshot = Schema.Struct({
+  kind: Schema.Literal("shopify-store"),
+  definition: shopifyStoreDefinition,
+  revision,
+  note,
+  report: ShopifyStoreReport,
+});
+export type ShopifyStoreSnapshot = typeof shopifyStoreSnapshot.Type;
 
 export const SOCIAL_CALENDAR_CHANNELS = ["facebook", "instagram", "tiktok", "youtube"] as const;
 const socialChannel = Schema.Literals(SOCIAL_CALENDAR_CHANNELS);
@@ -159,7 +176,11 @@ const socialCalendarSnapshot = Schema.Struct({
 });
 export type SocialCalendarSnapshot = typeof socialCalendarSnapshot.Type;
 
-export const BotAppSnapshot = Schema.Union([searchConsoleSnapshot, socialCalendarSnapshot]);
+export const BotAppSnapshot = Schema.Union([
+  searchConsoleSnapshot,
+  socialCalendarSnapshot,
+  shopifyStoreSnapshot,
+]);
 export type BotAppSnapshot = typeof BotAppSnapshot.Type;
 
 const appSlot = Schema.NullOr(
@@ -190,6 +211,8 @@ const messages = {
   "saved-app-changed": "The saved app changed. Open the latest version to continue.",
   "source-unavailable":
     "This bot app’s source access has changed. Check its account and tool assignment.",
+  "shopify-report-invalid": "Shopify did not return a complete store report.",
+  "shopify-store-mismatch": "The connected Shopify account returned a different store.",
   "report-invalid": "Search Console returned a report that did not match the requested page.",
   "report-empty": "Search Console returned no data for this page and report window.",
   "asset-approval-changed": "The original asset and its approval must stay with this proposal.",

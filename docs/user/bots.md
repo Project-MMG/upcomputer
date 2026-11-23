@@ -170,6 +170,26 @@ A bot's row shows the same statuses as a thread row, and also counts its backgro
 fails, until you open the bot's chat. It shows **Pending Approval** or **Awaiting Input** while any
 task started from its chat waits for you. Hover the bot's name to see why.
 
+## Review Shopify store exceptions
+
+Connect one Shopify store in the bot's project using a read-only Shopify connection.
+Under **Individual actions**, assign **Execute safe read-only Shopify GraphQL query** to the
+store bot. Paste the JSON below into **Fixed inputs**. Replace the example domain with the
+store's permanent `myshopify.com` domain and keep the rest of the query as shown.
+
+```json
+{
+  "query": "# Store: your-store.myshopify.com\nquery StoreOperations {\n  shop { myshopifyDomain }\n  products(first: 5, query: \"status:active\", sortKey: UPDATED_AT, reverse: true) {\n    nodes { id title featuredMedia { id }\n      variants(first: 3) {\n        nodes { id title inventoryQuantity inventoryItem { tracked } }\n      }\n    }\n  }\n  orders(first: 5, query: \"status:open fulfillment_status:on_hold\", reverse: true) {\n    nodes { id name displayFulfillmentStatus }\n  }\n}"
+}
+```
+
+Ask the bot to propose a Store operations app for that store. Open **Bot Apps** in the right
+pane or Bot Settings, then choose **Review proposal**. Check the store, account, and capture
+time before you approve the app. Ask the bot for another proposal to refresh the sample.
+
+After saving the app, ask the store bot to assign one catalog follow-up to your Website bot.
+The catalog brief includes the product, the work to do, and the link to Shopify Admin.
+
 ## Remove a bot
 
 Click **Remove bot** at the bottom of the bot's page. This deletes its memory. Its chat goes back

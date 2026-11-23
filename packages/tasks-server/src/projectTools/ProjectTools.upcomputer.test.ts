@@ -67,6 +67,7 @@ import * as Bots from "../bots/BotService.ts";
 import * as BotApps from "../botApps/BotApps.ts";
 import * as BotAppsMcp from "../botApps/mcp.ts";
 import { BOT_APPS_RPC_CONTRIBUTION } from "../botApps/rpc.ts";
+import { shopifyStoreAction } from "../botApps/shopifyStore.ts";
 import * as GmailWorkspace from "../gmailWorkspace/GmailWorkspace.ts";
 import * as GmailWorkspaceMcp from "../gmailWorkspace/mcp.ts";
 import { GMAIL_WORKSPACE_RPC_CONTRIBUTION } from "../gmailWorkspace/rpc.ts";
@@ -88,6 +89,13 @@ import {
   websiteProposal,
   websiteReport,
 } from "../../../../scripts/scenarios/fixtures/website-bot-app-data.ts";
+import {
+  otherShop,
+  shopifyApp,
+  shopifyProposal,
+  shopifyRead,
+  shopifyResponse,
+} from "../../../../scripts/scenarios/fixtures/shopify-store-data.ts";
 import { TaskRepository } from "../persistence/TaskRepository.ts";
 import { TaskRepositoryLive } from "../persistence/TaskRepositoryLive.ts";
 import { TASKS_SERVER_FEATURE } from "../serverFeature.ts";
@@ -161,6 +169,8 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
     return body.result;
   });
   return {
+    proposeShopify: (args: Schema.JsonObject) => call("bot_app_propose_shopify_store", args),
+    shopifyCatalog: () => call("bot_app_get_shopify_catalog_follow_ups", {}),
     proposeApp: (args: Schema.JsonObject) => call("bot_app_propose", args),
     proposeCalendar: (args: Schema.JsonObject) => call("bot_app_propose_social_calendar", args),
     appProposal: () => call("bot_app_get_proposal", {}),
@@ -1812,4 +1822,140 @@ it.effect("applies bot grants to an own background run and a schedule bound to i
     });
     expect(code(yield* backgroundApi.read(publicRead))).toBe("not-a-bot");
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "saves Shopify exceptions and scopes catalog follow-ups to the verified store and bot",
+  () =>
+    Effect.gen(function* () {
+      const tools = yield* ProjectTools.ProjectTools;
+      const apps = yield* BotApps.BotApps;
+      const { backend, enableComposio, authenticate } = yield* Fixture;
+      enableComposio();
+      const commerce = yield* addBot("Store operations", firstProject);
+      const website = yield* addBot("Website", firstProject);
+      const caller = yield* authenticate(commerce.threadId);
+      const unassigned = yield* authenticate(website.threadId);
+      const target = {
+        projectId: firstProject,
+        botId: commerce.agent.id,
+        threadId: commerce.threadId,
+      };
+      const connection = { projectId: firstProject, app: shopifyApp.slug };
+      yield* tools.connection({ ...connection, operation: "start" });
+      const [account] = Array.from(backend.accounts.values());
+      if (!account) throw new Error("Expected a fixture Shopify account.");
+      account.status = "ACTIVE";
+      account.label = "Workshop store";
+      backend.accounts.set("other-shop", { ...account, id: "other-shop" });
+      yield* tools.connection({ ...connection, operation: "finish" });
+
+      const audience = { kind: "selected", botIds: [commerce.agent.id] } as const;
+      const { input } = shopifyStoreAction(shopifyProposal.source.store);
+      const grant = {
+        projectId: firstProject,
+        slug: shopifyRead.slug,
+        fixedInputs: input.requiredFixedInputs,
+        audience,
+      };
+      yield* tools.grantApp({ ...connection, audience });
+      expect(code(yield* caller.proposeShopify(shopifyProposal))).toBe("fixed-inputs-required");
+      yield* tools.grantApp({ ...connection, audience: null });
+      yield* tools.grant(grant);
+      expect(
+        code(
+          yield* caller.proposeShopify({
+            ...shopifyProposal,
+            source: { ...shopifyProposal.source, store: otherShop },
+          }),
+        ),
+      ).toBe("fixed-inputs-required");
+      expect(code(yield* unassigned.proposeShopify(shopifyProposal))).toBe("not-assigned");
+      expect(backend.calls).toEqual([]);
+
+      backend.setShopifyReport({
+        successful: true,
+        data: { data: { ...shopifyResponse, shop: { myshopifyDomain: otherShop } } },
+      });
+      expect(code(yield* caller.proposeShopify(shopifyProposal))).toBe("shopify-store-mismatch");
+      backend.setShopifyReport({
+        data: shopifyResponse,
+        errors: [{ message: "Partial response" }],
+      });
+      expect(code(yield* caller.proposeShopify(shopifyProposal))).toBe("shopify-report-invalid");
+      expect(yield* apps.state(target)).toMatchObject({ saved: null, proposal: null });
+
+      backend.setShopifyReport({
+        successful: true,
+        data: JSON.stringify({ data: shopifyResponse }),
+      });
+      expect(content(yield* caller.proposeShopify(shopifyProposal))).toMatchObject({
+        title: shopifyProposal.title,
+      });
+      const { proposal } = yield* apps.state(target);
+      if (proposal?.status !== "available") throw new Error("Expected a Shopify proposal.");
+      expect(proposal.snapshot).toMatchObject({
+        kind: "shopify-store",
+        definition: shopifyProposal,
+        report: {
+          accountLabel: account.label,
+          catalog: [{ productId: "101", product: "Workshop apron" }],
+          inventory: [
+            {
+              productId: "101",
+              variantId: "201",
+              product: "Workshop apron",
+              variant: "Canvas",
+              available: 0,
+            },
+          ],
+          orders: [{ orderId: "401", order: "#1401" }],
+        },
+      });
+      expect(content(yield* caller.shopifyCatalog())).toBeNull();
+      yield* apps.review({
+        ...target,
+        revision: proposal.snapshot.revision,
+        decision: { kind: "approve" },
+      });
+      expect(yield* apps.state(target)).toMatchObject({ saved: proposal, proposal: null });
+      const followUps = [
+        {
+          product: "Workshop apron",
+          outcome: "Verify and prepare missing product media for the product page.",
+          source: "https://" + shopifyProposal.source.store + "/admin/products/101",
+        },
+      ];
+      expect(content(yield* caller.shopifyCatalog())).toEqual(followUps);
+      expect(content(yield* unassigned.shopifyCatalog())).toBeNull();
+      expect(backend.calls).toEqual(
+        Array.from({ length: 3 }, () => ({
+          userId: account.user_id,
+          slug: shopifyRead.slug,
+          account: account.id,
+          arguments: input.arguments,
+        })),
+      );
+
+      yield* tools.grant({ ...grant, audience: null });
+      expect((yield* apps.state(target)).saved).toEqual({
+        status: "unavailable",
+        revision: proposal.snapshot.revision,
+      });
+      expect(code(yield* caller.shopifyCatalog())).toBe("not-assigned");
+      yield* tools.grant(grant);
+      expect(content(yield* caller.shopifyCatalog())).toEqual(followUps);
+      yield* tools.connection({ ...connection, operation: "disconnect" });
+      yield* tools.connection({ ...connection, operation: "start" });
+      const replacement = Array.from(backend.accounts.values()).find(
+        ({ status }) => status === "INITIATED",
+      );
+      if (!replacement) throw new Error("Expected a replacement Shopify account.");
+      replacement.status = "ACTIVE";
+      replacement.label = account.label;
+      yield* tools.connection({ ...connection, operation: "finish" });
+      expect((yield* apps.state(target)).saved?.status).toBe("unavailable");
+      expect(code(yield* caller.shopifyCatalog())).toBe("source-unavailable");
+      expect(backend.calls).toHaveLength(3);
+    }).pipe(Effect.provide(testLayer)),
 );

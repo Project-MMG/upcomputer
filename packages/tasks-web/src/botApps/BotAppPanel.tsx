@@ -24,6 +24,7 @@ import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/ex
 import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useBots } from "../bots/botData.tsx";
 import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
+import { LifecyclePlanner } from "./LifecyclePlanner.tsx";
 import { PaidMediaDashboard } from "./PaidMediaDashboard.tsx";
 import { ShopifyStoreOperations } from "./ShopifyStoreOperations.tsx";
 import { SocialCalendar, type SocialCalendarFilters } from "./SocialCalendar.tsx";
@@ -38,6 +39,8 @@ function Report({
 }) {
   if (!("kind" in snapshot)) return <SearchConsoleReport snapshot={snapshot} />;
   switch (snapshot.kind) {
+    case "lifecycle":
+      return <LifecyclePlanner snapshot={snapshot} />;
     case "paid-media":
       return <PaidMediaDashboard snapshot={snapshot} />;
     case "shopify-store":
@@ -168,9 +171,11 @@ function ProposalReview({
           disabled={disabled || dirty}
           onClick={() => review(snapshot.revision, { kind: "approve" })}
         >
-          {"kind" in snapshot && snapshot.kind === "paid-media"
-            ? gt("Save report")
-            : gt("Approve app")}
+          {"kind" in snapshot && snapshot.kind === "lifecycle"
+            ? gt("Save plan")
+            : "kind" in snapshot && snapshot.kind === "paid-media"
+              ? gt("Save report")
+              : gt("Approve app")}
         </Button>
         <Button
           size="sm"

@@ -11,6 +11,11 @@ import {
   gmailFixtureKey,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import {
+  klaviyoActionData,
+  klaviyoActions,
+  klaviyoApp,
+} from "../../../../scripts/scenarios/fixtures/lifecycle-data.ts";
+import {
   googleAdsApp,
   googleAdsSearch,
   metaAdsApp,
@@ -120,6 +125,7 @@ export const makeComposioFixture = () => {
     tool(publicRead, "List public items", ["readOnlyHint"], false, {}),
     tool(unknownEffect, "Unclassified operation", [], true, {}),
     ...gmailActions,
+    ...klaviyoActions,
     shopifyRead,
     searchAction,
     postizAction,
@@ -138,6 +144,7 @@ export const makeComposioFixture = () => {
     { slug: "public", name: "Public", no_auth: true },
     { slug: "config", name: "Needs configuration", no_auth: false },
     gmailApp,
+    klaviyoApp,
     shopifyApp,
     searchApp,
     postizApp,
@@ -146,6 +153,7 @@ export const makeComposioFixture = () => {
   ];
   let sequence = 0;
   let nextWriteFailure: { readonly slug: string; readonly status: number } | undefined;
+  let lifecycleOptions: Parameters<typeof klaviyoActionData>[1];
   let adsReportOptions: Parameters<typeof paidMediaActionData>[2];
   let searchReport: unknown = websiteReport;
   let shopifyReport: unknown = { successful: true, data: { data: shopifyResponse } };
@@ -307,6 +315,10 @@ export const makeComposioFixture = () => {
           account,
           arguments: input.arguments,
         });
+        const lifecycleReport = klaviyoActionData(input.tool_slug, lifecycleOptions);
+        if (lifecycleReport !== undefined) {
+          return response({ result_type: "completed", data: lifecycleReport });
+        }
         const adsReport = paidMediaActionData(input.tool_slug, input.arguments, adsReportOptions);
         if (adsReport !== undefined) {
           return response({ result_type: "completed", data: adsReport });
@@ -347,6 +359,9 @@ export const makeComposioFixture = () => {
     accounts,
     catalogRequests,
     sessions,
+    setLifecycleReport: (options: typeof lifecycleOptions) => {
+      lifecycleOptions = options;
+    },
     setPaidMediaReport: (options: Parameters<typeof paidMediaActionData>[2]) => {
       adsReportOptions = options;
     },

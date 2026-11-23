@@ -1,5 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
+  LifecycleProposalInput,
   PaidMediaProposalInput,
   ShopifyStoreProposalInput,
   BotAppProposalInput,
@@ -53,6 +54,17 @@ const toolkit = Toolkit.make(
     description:
       "Propose a Paid Media app with reports for the bot's assigned Google Ads and Meta Ads accounts. Use the Google customer ID and act_-prefixed Meta ad account ID fixed on the read grants, an inclusive date window, and the exact Meta action type to count. Supply a Google Ads campaign ID, proposed daily budget in millionths of its account currency, reason, and a plan to measure the outcome. Up.computer checks the campaign's own daily budget. This saves a proposal for review. To replace a pending proposal, supply its current revision as replacesRevision.",
     parameters: PaidMediaProposalInput,
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
+  Tool.make("bot_app_propose_lifecycle", {
+    description:
+      "Propose a Lifecycle app for this bot using its assigned Klaviyo account. Use the account ID fixed on Get Account, one campaign or flow ID, one target segment ID, an inclusive date window in the Klaviyo account’s time zone, and the account's conversion metric ID required for the values report. Use aggregate campaign, flow and segment evidence. Supply an email follow-up with a reason, consent checks, proposed timing, subject, body, and a success measure. Use no individual profile or recipient data. This saves a proposal for local review. Use replacesRevision to update a pending proposal.",
+    parameters: LifecycleProposalInput,
     success: McpSchema.CallToolResult,
     failure: OrchestratorMcpFailure,
   })
@@ -124,6 +136,11 @@ const handlers = McpToolAccess.toLayer(
       bot_app_propose_paid_media: McpToolAccess.actsAsCaller((input) =>
         Effect.flatMap(McpInvocationContext, (caller) =>
           result(apps.propose(caller, { ...input, kind: "paid-media" })),
+        ),
+      ),
+      bot_app_propose_lifecycle: McpToolAccess.actsAsCaller((input) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(apps.propose(caller, { ...input, kind: "lifecycle" })),
         ),
       ),
       bot_app_get_proposal: McpToolAccess.actsAsCaller(() =>

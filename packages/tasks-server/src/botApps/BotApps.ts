@@ -6,6 +6,7 @@ import {
   type BotAppReviewInput,
   type BotAppState,
   type BotAppTarget,
+  type ShopifyStoreProposalInput,
   type SocialCalendarProposalInput,
 } from "@t3tools/tasks-contracts/v1";
 import * as Context from "effect/Context";
@@ -20,15 +21,33 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
 import { postizSourceAction, readPostizDestinations } from "./postiz.ts";
+import {
+  readShopifyExceptions,
+  shopifyCatalogFollowUps,
+  shopifyStoreAction,
+} from "./shopifyStore.ts";
 import { readMetrics, sourceAction } from "./searchConsole.ts";
 
 type Invocation = McpInvocationContext["Service"];
 type AppError = BotAppError | ProjectToolError;
+type ShopifyProposal = ShopifyStoreProposalInput & { readonly kind: "shopify-store" };
 type SocialProposal = SocialCalendarProposalInput & { readonly kind: "social-calendar" };
 type StoredApp = typeof storedApp.Type;
 const storedApp = Schema.fromJsonString(
   Schema.Struct({ accountId: Schema.NullOr(Schema.NonEmptyString), snapshot: BotAppSnapshot }),
 );
+function appSourceAction(snapshot: BotAppSnapshot) {
+  if (!("kind" in snapshot)) return sourceAction(snapshot.definition.source);
+  switch (snapshot.kind) {
+    case "shopify-store":
+      return shopifyStoreAction(snapshot.definition.source.store);
+    case "social-calendar": {
+      const { source } = snapshot.definition;
+      return source.kind === "local" ? null : postizSourceAction(source);
+    }
+  }
+}
+
 const decode = Schema.decodeUnknownEffect(storedApp);
 const encode = Schema.encodeEffect(storedApp);
 const storageError = (cause: unknown) => new BotAppError({ code: "storage-unavailable", cause });
@@ -38,9 +57,12 @@ export class BotApps extends Context.Service<
   {
     readonly state: (target: BotAppTarget) => Effect.Effect<BotAppState, AppError>;
     readonly proposal: (caller: Invocation) => Effect.Effect<BotAppSnapshot | null, AppError>;
+    readonly shopifyCatalog: (
+      caller: Invocation,
+    ) => Effect.Effect<ReturnType<typeof shopifyCatalogFollowUps> | null, AppError>;
     readonly propose: (
       caller: Invocation,
-      input: BotAppProposalInput | SocialProposal,
+      input: BotAppProposalInput | SocialProposal | ShopifyProposal,
     ) => Effect.Effect<{ readonly revision: string; readonly title: string }, AppError>;
     readonly review: (input: BotAppReviewInput) => Effect.Effect<void, AppError>;
   }
@@ -64,12 +86,7 @@ const make = Effect.gen(function* () {
     { accountId, snapshot }: StoredApp,
     use: Effect.Effect<A, AppError>,
   ) {
-    const action =
-      "kind" in snapshot
-        ? snapshot.definition.source.kind === "local"
-          ? null
-          : postizSourceAction(snapshot.definition.source)
-        : sourceAction(snapshot.definition.source);
+    const action = appSourceAction(snapshot);
     if (action === null) return yield* use;
     const { app, input } = action;
     return yield* tools.withConnectedBotReadAccess(caller, app, [input], (currentAccountId) =>
@@ -109,6 +126,38 @@ const make = Effect.gen(function* () {
     } satisfies StoredApp;
   });
 
+  const captureShopifyStore = Effect.fn("BotApps.captureShopifyStore")(function* (
+    caller: Invocation,
+    { kind, title, source }: Omit<ShopifyProposal, "replacesRevision">,
+    previous: StoredApp | null,
+  ) {
+    const { app, input } = shopifyStoreAction(source.store);
+    const read = yield* tools.readConnectedBotAction(caller, app, input);
+    const exceptions = yield* readShopifyExceptions(read.data, source.store);
+    const prior = previous?.snapshot;
+    return {
+      accountId: read.accountId,
+      snapshot: {
+        kind,
+        definition: { title, source },
+        revision: yield* uuid,
+        note:
+          prior &&
+          "kind" in prior &&
+          prior.kind === "shopify-store" &&
+          previous?.accountId === read.accountId &&
+          Equal.equals(prior.definition.source, source)
+            ? prior.note
+            : "",
+        report: {
+          readAt: DateTime.formatIso(yield* DateTime.now),
+          accountLabel: read.accountLabel,
+          ...exceptions,
+        },
+      },
+    } satisfies StoredApp;
+  });
+
   const captureSocialCalendar = Effect.fn("BotApps.captureSocialCalendar")(function* (
     caller: Invocation,
     { kind, ...definition }: Omit<SocialProposal, "replacesRevision">,
@@ -116,7 +165,8 @@ const make = Effect.gen(function* () {
   ) {
     const { source, contentPackage } = definition;
     const prior = previous?.snapshot;
-    const previousCalendar = prior && "kind" in prior ? prior : null;
+    const previousCalendar =
+      prior && "kind" in prior && prior.kind === "social-calendar" ? prior : null;
     if (
       previousCalendar &&
       !Equal.equals(previousCalendar.definition.contentPackage.asset, contentPackage.asset)
@@ -183,6 +233,19 @@ const make = Effect.gen(function* () {
       const stored = yield* decode(proposal).pipe(Effect.mapError(storageError));
       return yield* withSourceAccess(caller, stored, Effect.succeed(stored.snapshot));
     }),
+    shopifyCatalog: Effect.fn("BotApps.shopifyCatalog")(function* (caller) {
+      const owner = yield* tools.confirmCaller(caller);
+      const { saved } = yield* load(owner);
+      if (saved === null) return null;
+      const stored = yield* decode(saved).pipe(Effect.mapError(storageError));
+      const { snapshot } = stored;
+      if (!("kind" in snapshot) || snapshot.kind !== "shopify-store") return null;
+      return yield* withSourceAccess(
+        caller,
+        stored,
+        Effect.sync(() => shopifyCatalogFollowUps(snapshot)),
+      );
+    }),
     propose: Effect.fn("BotApps.propose")(function* (caller, { replacesRevision, ...definition }) {
       const owner = yield* tools.confirmCaller(caller);
       if (owner.plan) return yield* new ProjectToolError({ code: "plan-mode" });
@@ -194,9 +257,11 @@ const make = Effect.gen(function* () {
         return yield* new BotAppError({ code: "proposal-changed" });
       }
 
-      const stored = yield* "kind" in definition
-        ? captureSocialCalendar(caller, definition, previous)
-        : captureSearchReport(caller, definition, previous);
+      const stored = yield* !("kind" in definition)
+        ? captureSearchReport(caller, definition, previous)
+        : definition.kind === "social-calendar"
+          ? captureSocialCalendar(caller, definition, previous)
+          : captureShopifyStore(caller, definition, previous);
       const json = yield* encode(stored).pipe(Effect.mapError(storageError));
       yield* withSourceAccess(
         caller,
@@ -257,6 +322,7 @@ const make = Effect.gen(function* () {
           const { channel, note } = decision;
           if (
             !("kind" in snapshot) ||
+            snapshot.kind !== "social-calendar" ||
             !snapshot.definition.contentPackage.posts.some((post) => post.channel === channel)
           ) {
             return yield* new BotAppError({ code: "caption-unavailable" });

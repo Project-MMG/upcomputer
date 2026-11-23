@@ -24,6 +24,7 @@ import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/ex
 import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useBots } from "../bots/botData.tsx";
 import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
+import { ShopifyStoreOperations } from "./ShopifyStoreOperations.tsx";
 import { SocialCalendar, type SocialCalendarFilters } from "./SocialCalendar.tsx";
 import { useBotAppState } from "./useBotAppState.ts";
 
@@ -33,6 +34,15 @@ function Report({
   snapshot,
 }: {
   readonly snapshot: Exclude<BotAppSnapshot, SocialCalendarSnapshot>;
+}) {
+  if ("kind" in snapshot) return <ShopifyStoreOperations snapshot={snapshot} />;
+  return <SearchConsoleReport snapshot={snapshot} />;
+}
+
+function SearchConsoleReport({
+  snapshot,
+}: {
+  readonly snapshot: Exclude<BotAppSnapshot, { kind: string }>;
 }) {
   const gt = useGT();
   const {
@@ -239,8 +249,10 @@ function BotApp({
   const compareRevision =
     proposal?.status === "available" &&
     "kind" in proposal.snapshot &&
+    proposal.snapshot.kind === "social-calendar" &&
     saved?.status === "available" &&
-    "kind" in saved.snapshot
+    "kind" in saved.snapshot &&
+    saved.snapshot.kind === "social-calendar"
       ? proposal.snapshot.revision
       : undefined;
   const showSaved = compareRevision !== undefined && showSavedFor === compareRevision;
@@ -291,7 +303,7 @@ function BotApp({
                   {proposal.snapshot.definition.title}
                 </h3>
               </div>
-              {"kind" in proposal.snapshot ? (
+              {"kind" in proposal.snapshot && proposal.snapshot.kind === "social-calendar" ? (
                 <SocialCalendar
                   snapshot={proposal.snapshot}
                   filters={filters}
@@ -338,7 +350,7 @@ function BotApp({
                   {saved.snapshot.definition.title}
                 </h3>
               </div>
-              {"kind" in saved.snapshot ? (
+              {"kind" in saved.snapshot && saved.snapshot.kind === "social-calendar" ? (
                 <SocialCalendar
                   snapshot={saved.snapshot}
                   filters={filters}

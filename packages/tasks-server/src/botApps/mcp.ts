@@ -1,5 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
+  ShopifyStoreProposalInput,
   BotAppProposalInput,
   SocialCalendarProposalInput,
   type BotAppError,
@@ -26,6 +27,27 @@ const inThread = () => {
 };
 
 const toolkit = Toolkit.make(
+  Tool.make("bot_app_get_shopify_catalog_follow_ups", {
+    description:
+      "Read the catalog follow-ups from this bot's approved Shopify store app. When asked to assign a catalog follow-up, find the receiving bot through task_context and create one internal task using only the returned product, outcome and source link.",
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
+  Tool.make("bot_app_propose_shopify_store", {
+    description:
+      "Propose a Shopify Store operations app for this bot. Supply the permanent myshopify.com domain of the assigned store. Up.computer reads a bounded catalog, inventory and fulfillment sample through the assigned read-only action. To replace a pending proposal, read it and supply its current revision as replacesRevision.",
+    parameters: ShopifyStoreProposalInput,
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
   Tool.make("bot_app_get_proposal", {
     description:
       "Read this bot’s pending app proposal and operator note. Use its revision when proposing an update.",
@@ -79,6 +101,14 @@ const handlers = McpToolAccess.toLayer(
   Effect.gen(function* () {
     const apps = yield* BotApps.BotApps;
     return {
+      bot_app_get_shopify_catalog_follow_ups: McpToolAccess.actsAsCaller(() =>
+        Effect.flatMap(McpInvocationContext, (caller) => result(apps.shopifyCatalog(caller))),
+      ),
+      bot_app_propose_shopify_store: McpToolAccess.actsAsCaller((input) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(apps.propose(caller, { ...input, kind: "shopify-store" })),
+        ),
+      ),
       bot_app_get_proposal: McpToolAccess.actsAsCaller(() =>
         Effect.flatMap(McpInvocationContext, (caller) => result(apps.proposal(caller))),
       ),

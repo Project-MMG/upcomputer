@@ -2239,6 +2239,8 @@ it.live(
             "project_tools_search",
             "project_tool_read",
             "project_tool_write",
+            "bot_app_get_shopify_catalog_follow_ups",
+            "bot_app_propose_shopify_store",
             "gmail_workspace_save",
             "gmail_workspace_check",
             "gmail_workspace_record_reply",

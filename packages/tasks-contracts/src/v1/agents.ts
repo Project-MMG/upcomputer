@@ -25,6 +25,16 @@ export type TaskAgentRunId = typeof TaskAgentRunId.Type;
 export const TaskAgentRunTriggerStatus = Schema.Literals(["failed", "interrupted", "blocked"]);
 export type TaskAgentRunTriggerStatus = typeof TaskAgentRunTriggerStatus.Type;
 
+export const TaskAgentWorkingFolder = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(240),
+  Schema.isPattern(/^[^\\:\p{Cc}]+$/u),
+  Schema.makeFilter(
+    (folder) =>
+      folder.split("/").every((part) => part !== "" && part !== "." && part !== "..") ||
+      "Choose a folder relative to the project",
+  ),
+);
+
 export const TaskAgentConfig = Schema.Struct({
   role: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -32,6 +42,7 @@ export const TaskAgentConfig = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   tools: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   skills: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  workingFolder: Schema.optional(TaskAgentWorkingFolder),
   instructions: TrimmedNonEmptyString,
 });
 export type TaskAgentConfig = typeof TaskAgentConfig.Type;

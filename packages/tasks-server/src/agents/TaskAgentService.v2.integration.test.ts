@@ -12,6 +12,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  RuntimeRequestId,
   TurnItemId,
   type ModelSelection,
   type OrchestrationV2ProviderThread,
@@ -28,11 +29,14 @@ import {
 } from "@t3tools/contracts";
 import {
   BOTS_RPC_METHODS,
+  BOT_WORK_RPC_METHODS,
   BotsRpcGroup,
+  BotWorkRpcGroup,
   BotWriteInput,
   defaultBotAppearance,
   TASKS_RPC_METHODS,
   TaskAgentId,
+  TaskAgentRunId,
   TaskId,
   TasksRpcGroup,
   type Task,
@@ -40,6 +44,7 @@ import {
 } from "@t3tools/tasks-contracts/v1";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -106,6 +111,7 @@ const projectId = ProjectId.make("project:task-agents-v2");
 
 /** A message containing this marker keeps its turn running until it is interrupted. */
 const HOLD = "[hold-turn]";
+const ASK = "[request-approval]";
 /** A message containing this marker fails its turn. */
 const FAIL = "[fail-turn]";
 /** A message containing this marker fails its turn on a provider usage limit that resets 2 s later. */
@@ -246,6 +252,24 @@ function makeTaskAgentAdapter(
               const at = yield* DateTime.now;
               const id = ProviderTurnId.make(`provider-turn:${input.attemptId}`);
               yield* Queue.offer(events, providerTurn(input, id, "running", at));
+              if (input.message.text.includes(ASK)) {
+                yield* Queue.offer(events, {
+                  type: "runtime_request.updated",
+                  driver,
+                  threadId: input.threadId,
+                  runtimeRequest: {
+                    id: RuntimeRequestId.make(`request:${input.attemptId}`),
+                    nodeId: input.rootNodeId,
+                    providerTurnId: id,
+                    nativeRequestRef: null,
+                    kind: "permission",
+                    status: "pending",
+                    responseCapability: { type: "message" },
+                    createdAt: at,
+                    resolvedAt: null,
+                  },
+                });
+              }
               if (input.message.text.includes(HOLD)) {
                 held.set(id, input);
                 return;
@@ -2218,6 +2242,7 @@ it.live(
           "task_agent_runs",
           "task_automations",
           "bot_apps",
+          "bot_setup_proposals",
         ]) {
           assert.isTrue(tables.has(table), `${table} exists`);
         }
@@ -2252,6 +2277,7 @@ it.live(
             "bot_app_propose_social_calendar",
             "bot_app_get_proposal",
             "bot_app_propose",
+            "bot_setup_propose",
           ]),
         );
 
@@ -2708,6 +2734,297 @@ it.live(
           [],
         );
       }),
+    ),
+);
+
+it.live(
+  "reviews one exact specialist setup and scopes both work apps to their bot and project",
+  () =>
+    runSlice("bot-work-setup", ({ repository, cwd, sendAsPerson }) =>
+      Effect.gen(function* () {
+        const bots = yield* BotService;
+        const projects = yield* ProjectStore.ProjectStoreV2;
+        const events = yield* EventSink.EventSinkV2;
+        const otherProject = ProjectId.make("bot-work-other");
+        for (const id of [projectId, otherProject]) {
+          yield* projects.apply({
+            sequence: 1,
+            eventId: EventId.make(`work-project:${id}`),
+            aggregateKind: "project",
+            aggregateId: id,
+            occurredAt: timestamp,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "project.created",
+            payload: {
+              projectId: id,
+              title: id,
+              workspaceRoot: cwd,
+              defaultModelSelection: agentModel,
+              scripts: [],
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            },
+          });
+        }
+        yield* FileSystem.FileSystem.use((fs) => fs.makeDirectory(`${cwd}/reports`)).pipe(
+          Effect.provide(NodeServices.layer),
+        );
+        const chief = yield* bots.save({
+          id: TaskAgentId.make("review-coordinator"),
+          projectId,
+          allowedProjectIds: [projectId],
+          name: "Coordinator",
+          config: agent.config,
+        });
+        const target = { projectId, botId: chief.agent.id, threadId: chief.threadId };
+        const makeClient = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+          RpcTest.makeClient(BotWorkRpcGroup.middleware(RpcScopeAuthorization)).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                rpcContributionHandlersLayer(TASKS_PRODUCT.rpc, {
+                  currentSessionId: AuthSessionId.make("work-review-session"),
+                }) as Layer.Layer<Rpc.ToHandler<RpcGroup.Rpcs<typeof BotWorkRpcGroup>>>,
+                RpcAuthorization.layer(scopes, rpcContributionScopes(TASKS_PRODUCT.rpc)),
+              ),
+            ),
+          );
+        const writer = yield* makeClient([
+          AuthOrchestrationReadScope,
+          AuthOrchestrationOperateScope,
+        ]);
+        const reader = yield* makeClient([AuthOrchestrationReadScope]);
+        const configure = { ...target, action: "enable-team" } as const;
+        assert.equal(
+          (yield* reader[BOT_WORK_RPC_METHODS.configure](configure).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* writer[BOT_WORK_RPC_METHODS.configure](configure);
+        assert.equal((yield* reader[BOT_WORK_RPC_METHODS.state](target)).app.view, "team");
+
+        const sequence = yield* events.latestSequence();
+        yield* sendAsPerson(chief.threadId, `Prepare a specialist setup. ${HOLD}`);
+        const started = yield* events
+          .stream({ afterSequence: sequence, eventType: "provider-turn.updated" })
+          .pipe(
+            Stream.filter(({ event }) => event.threadId === chief.threadId),
+            Stream.runHead,
+          );
+        assert.isTrue(Option.isSome(started));
+        const proposal = {
+          roleKey: "reporting",
+          draft: {
+            name: "Reporting specialist",
+            role: "Maintain the report",
+            folder: "reports",
+            instructions: "Read reports/AGENTS.md and verify the project report.",
+            skills: ["report-review"],
+            appTitle: "Report queue",
+            toolRequests: [
+              {
+                toolkit: "fixture",
+                action: "FIXTURE_READ_REPORT",
+                account: "Reporting test account",
+                scope: "The team’s report",
+              },
+            ],
+          },
+        };
+        const propose = (input: typeof proposal) =>
+          callTaskTool(chief.threadId, "bot_setup_propose", input);
+        const badFolder = yield* propose({
+          ...proposal,
+          draft: { ...proposal.draft, folder: "absent" },
+        });
+        assert.isTrue(badFolder.isError);
+        const rejected = yield* propose({ ...proposal, roleKey: "discard-this" });
+        assert.isFalse(rejected.isError, rejected.text);
+        const discard = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).proposals[0]!;
+        yield* writer[BOT_WORK_RPC_METHODS.review]({
+          ...target,
+          roleKey: discard.roleKey,
+          revision: discard.revision,
+          decision: { kind: "reject" },
+        });
+        const rejectedAgain = yield* propose({ ...proposal, roleKey: "discard-this" });
+        assert.equal(JSON.parse(rejectedAgain.text).state.status, "rejected");
+
+        const first = yield* propose(proposal);
+        assert.isFalse(first.isError, first.text);
+        assert.equal((yield* propose(proposal)).text, first.text);
+        assert.lengthOf(yield* bots.list, 1);
+        const pending = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).proposals.find(
+          (item) => item.roleKey === proposal.roleKey,
+        )!;
+        const readOnlyReview = {
+          ...target,
+          roleKey: pending.roleKey,
+          revision: pending.revision,
+          decision: { kind: "approve" },
+        } as const;
+        assert.equal(
+          (yield* reader[BOT_WORK_RPC_METHODS.review](readOnlyReview).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* writer[BOT_WORK_RPC_METHODS.review]({
+          ...readOnlyReview,
+          decision: {
+            kind: "edit",
+            draft: { ...proposal.draft, appTitle: "Verified report queue" },
+          },
+        });
+        const stale = yield* writer[BOT_WORK_RPC_METHODS.review](readOnlyReview).pipe(
+          Effect.result,
+        );
+        assert.equal(stale._tag, "Failure");
+        const revised = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).proposals.find(
+          (item) => item.roleKey === proposal.roleKey,
+        )!;
+        assert.notEqual(revised.revision, pending.revision);
+        const approve = writer[BOT_WORK_RPC_METHODS.review]({
+          ...readOnlyReview,
+          revision: revised.revision,
+        });
+        yield* Effect.all([approve, approve], { concurrency: 2 });
+        const applied = JSON.parse((yield* propose(proposal)).text).state;
+        assert.equal(applied.status, "applied");
+        const specialist = (yield* bots.list).find(({ agent }) => agent.id === applied.botId)!;
+        assert.lengthOf(yield* bots.list, 2);
+        assert.deepInclude(specialist.agent.config, {
+          workingFolder: "reports",
+          skills: ["report-review"],
+          runtimeMode: "approval-required",
+        });
+        const repeatedKey = "existing-reporting";
+        const duplicate = yield* propose({
+          roleKey: repeatedKey,
+          draft: { ...proposal.draft, appTitle: "A second queue" },
+        });
+        assert.isFalse(duplicate.isError, duplicate.text);
+        const reusing = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).proposals.find(
+          (item) => item.roleKey === repeatedKey,
+        )!;
+        yield* writer[BOT_WORK_RPC_METHODS.review]({
+          ...target,
+          roleKey: repeatedKey,
+          revision: reusing.revision,
+          decision: { kind: "approve" },
+        });
+        assert.deepInclude(
+          JSON.parse((yield* propose({ ...proposal, roleKey: repeatedKey })).text).state,
+          {
+            status: "applied",
+            botId: specialist.agent.id,
+            reused: true,
+          },
+        );
+        assert.lengthOf(yield* bots.list, 2);
+        const specialistTarget = {
+          projectId,
+          botId: specialist.agent.id,
+          threadId: specialist.threadId,
+        };
+        for (const invalid of [
+          { ...target, projectId: otherProject },
+          { ...target, botId: specialist.agent.id },
+        ]) {
+          assert.equal(
+            (yield* reader[BOT_WORK_RPC_METHODS.state](invalid).pipe(Effect.result))._tag,
+            "Failure",
+          );
+        }
+
+        const handoff = yield* repository.upsert({
+          ...task,
+          title: "Verify the report",
+          status: "Done",
+          output: "Fixture report verified.",
+          tags: [`bot:${specialist.agent.id}`],
+          sourceThreadId: chief.threadId,
+        });
+        const blocked = yield* repository.upsert({
+          ...task,
+          rank: "0000000000100001" as Task["rank"],
+          id: TaskId.make("task:fixture-blocker"),
+          title: "Wait for fixture access",
+          status: "Blocked",
+        });
+        const approval = yield* repository.upsert({
+          ...task,
+          rank: "0000000000100002" as Task["rank"],
+          id: TaskId.make("task:fixture-approval"),
+          title: "Review fixture report",
+          status: "Needs Review",
+        });
+        yield* repository.upsert({
+          ...task,
+          rank: "0000000000100003" as Task["rank"],
+          id: TaskId.make("task:outside-project"),
+          projectId: otherProject,
+          title: "Other project approval",
+          status: "Needs Review",
+        });
+        const team = yield* reader[BOT_WORK_RPC_METHODS.state](target);
+        assert.deepStrictEqual(
+          team.handoffs.map(({ id, ownerId, hasResult }) => ({ id, ownerId, hasResult })),
+          [{ id: handoff.id, ownerId: specialist.agent.id, hasResult: true }],
+        );
+        assert.deepStrictEqual(
+          team.blockers.map(({ id }) => id),
+          [blocked.id],
+        );
+        assert.deepStrictEqual(
+          team.approvals.map(({ id }) => id),
+          [approval.id],
+        );
+        const assigned = yield* reader[BOT_WORK_RPC_METHODS.state](specialistTarget);
+        assert.deepStrictEqual(assigned.app, { view: "assigned", title: "Verified report queue" });
+        assert.deepStrictEqual(assigned.handoffs, team.handoffs);
+        assert.deepStrictEqual(assigned.approvals, []);
+        assert.deepStrictEqual(assigned.blockers, []);
+        assert.deepStrictEqual(assigned.proposals, []);
+
+        const afterSequence = yield* events.latestSequence();
+        yield* sendAsPerson(specialist.threadId, `Check the report. ${ASK} ${HOLD}`);
+        yield* events.stream({ afterSequence, eventType: "runtime-request.updated" }).pipe(
+          Stream.filter(({ event }) => event.threadId === specialist.threadId),
+          Stream.runHead,
+        );
+        const startedAt = DateTime.formatIso(yield* DateTime.now);
+        for (let index = 0; index < 9; index++) {
+          const earlier = index < 8;
+          const candidate = yield* repository.upsert({
+            ...task,
+            id: TaskId.make(`task:approval-candidate:${index}`),
+            rank: `000000000010001${index}` as Task["rank"],
+            title: earlier ? "Active task" : "Waiting for operator approval",
+            status: "In Progress",
+            tags: [`bot:${specialist.agent.id}`],
+          });
+          yield* repository.createAgentRun({
+            id: TaskAgentRunId.make(`run:approval-candidate:${index}`),
+            taskId: candidate.id,
+            agentId: specialist.agent.id,
+            threadId: earlier
+              ? ThreadIdBrand.make(`thread:approval-candidate:${index}`)
+              : specialist.threadId,
+            modelSelection: agentModel,
+            status: "running",
+            startedAt,
+            completedAt: null,
+            triggerRunId: null,
+            continuesRunId: null,
+          });
+        }
+        const withLiveApproval = yield* reader[BOT_WORK_RPC_METHODS.state](target);
+        assert.strictEqual(
+          withLiveApproval.approvals.find(({ id }) => id === "task:approval-candidate:8")
+            ?.approvalThreadId,
+          specialist.threadId,
+        );
+      }).pipe(Effect.scoped),
     ),
 );
 

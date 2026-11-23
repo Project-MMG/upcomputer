@@ -19,10 +19,11 @@ import {
 import { TasksWebRpcGroup } from "./rpc/tasksRpcGroup.ts";
 import {
   BotAppsRpcGroup,
+  BotWorkRpcGroup,
   GmailWorkspaceRpcGroup,
   ProjectToolsRpcGroup,
 } from "@t3tools/tasks-contracts/v1";
-import { savedBotAppSurfaceId } from "./botApps/surface.ts";
+import { savedBotAppSurfaceId, workBotAppSurfaceId } from "./botApps/surface.ts";
 import { gmailWorkspaceSurfaceId } from "./gmailWorkspace/surface.ts";
 
 const LazyProjectTools = lazy(() => import("./projectTools/ProjectToolsPanel.tsx"));
@@ -120,7 +121,13 @@ function ChatHeaderRunCounts(props: ExperimentalWebThreadAccessoryProps) {
 export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
   id: "upcomputer.tasks.web",
   version: 1,
-  rpcGroups: [TasksWebRpcGroup, ProjectToolsRpcGroup, GmailWorkspaceRpcGroup, BotAppsRpcGroup],
+  rpcGroups: [
+    TasksWebRpcGroup,
+    ProjectToolsRpcGroup,
+    GmailWorkspaceRpcGroup,
+    BotAppsRpcGroup,
+    BotWorkRpcGroup,
+  ],
   projectTools: (props) => (
     <Suspense fallback={null}>
       <LazyProjectTools {...props} />
@@ -160,6 +167,12 @@ export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
       label: msg("Bot app"),
       icon: LayoutGridIcon,
       load: () => import("./botApps/BotAppPanel.tsx"),
+    },
+    {
+      id: workBotAppSurfaceId,
+      label: msg("Work dashboard"),
+      icon: ListTodoIcon,
+      load: () => import("./botApps/BotWorkPanel.tsx"),
     },
     {
       id: "bot-apps",

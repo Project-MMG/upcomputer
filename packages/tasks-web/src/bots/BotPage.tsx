@@ -731,14 +731,18 @@ function BotProfile({
   const project = useProject(scopeProjectRef(environmentId, bot.projectId));
   const shell = useQuietThreadShell(scopeThreadRef(environmentId, bot.threadId));
   const folder = shell?.worktreePath ?? project?.workspaceRoot;
-  const { role, skills } = bot.agent.config;
+  const { role, skills, workingFolder } = bot.agent.config;
   return (
     <SettingsSection title={gt("Operating profile")} hideTitle>
       <SettingsRow title={gt("Role")} description={role} />
       <SettingsRow
         title={gt("Working folder")}
         description={
-          folder ? <code className="break-all">{folder}</code> : gt("Checkout unavailable")
+          workingFolder || folder ? (
+            <code className="break-all">{workingFolder ?? folder}</code>
+          ) : (
+            gt("Checkout unavailable")
+          )
         }
       />
       <SettingsRow

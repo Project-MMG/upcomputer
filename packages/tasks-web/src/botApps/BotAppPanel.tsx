@@ -25,6 +25,7 @@ import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web
 import { useBots } from "../bots/botData.tsx";
 import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
 import { LifecyclePlanner } from "./LifecyclePlanner.tsx";
+import { OutboundQueue } from "./OutboundQueue.tsx";
 import { PaidMediaDashboard } from "./PaidMediaDashboard.tsx";
 import { ShopifyStoreOperations } from "./ShopifyStoreOperations.tsx";
 import { SocialCalendar, type SocialCalendarFilters } from "./SocialCalendar.tsx";
@@ -41,6 +42,8 @@ function Report({
   switch (snapshot.kind) {
     case "lifecycle":
       return <LifecyclePlanner snapshot={snapshot} />;
+    case "outbound":
+      return <OutboundQueue snapshot={snapshot} />;
     case "paid-media":
       return <PaidMediaDashboard snapshot={snapshot} />;
     case "shopify-store":
@@ -322,6 +325,16 @@ function BotApp({
                   filters={filters}
                   setFilters={setFilters}
                   review={{
+                    disabled,
+                    send: (decision) => review(proposal.snapshot.revision, decision),
+                  }}
+                />
+              ) : "kind" in proposal.snapshot && proposal.snapshot.kind === "outbound" ? (
+                <OutboundQueue
+                  key={proposal.snapshot.revision}
+                  snapshot={proposal.snapshot}
+                  review={{
+                    botId: bot.agent.id,
                     disabled,
                     send: (decision) => review(proposal.snapshot.revision, decision),
                   }}

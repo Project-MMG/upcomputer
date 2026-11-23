@@ -1,6 +1,8 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   LifecycleProposalInput,
+  OutboundOpportunityId,
+  OutboundProposalInput,
   PaidMediaProposalInput,
   ShopifyStoreProposalInput,
   BotAppProposalInput,
@@ -11,7 +13,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import {
@@ -69,6 +71,28 @@ const toolkit = Toolkit.make(
     failure: OrchestratorMcpFailure,
   })
     .annotate(Tool.Readonly, false)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
+  Tool.make("bot_app_propose_outbound", {
+    description:
+      "Propose an opportunity queue for this bot. Use links or local exports from the sources the operator approved. Include the source reference, reason to engage, draft reply, and ownerId from this project's task_context for each opportunity. Use the Inbox owner for customer support. Use replacesRevision to update a pending queue.",
+    parameters: OutboundProposalInput,
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
+  Tool.make("bot_app_get_outbound_handoff", {
+    description:
+      "Read one opportunity from this bot's saved queue after the operator marks it for referral. When asked to route the saved handoff, use task_context and create an internal task for the returned ownerId. Use the owner's trigger status and tags, and set metadata.botId to the ownerId. Include the source and only the context needed to review the draft. Keep the draft unposted.",
+    parameters: Schema.Struct({ opportunityId: OutboundOpportunityId }),
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, true)
     .annotate(McpSchema.EnabledWhen, inThread)
     .addDependency(McpInvocationContext)
     .addDependency(ThreadManagementService),
@@ -141,6 +165,16 @@ const handlers = McpToolAccess.toLayer(
       bot_app_propose_lifecycle: McpToolAccess.actsAsCaller((input) =>
         Effect.flatMap(McpInvocationContext, (caller) =>
           result(apps.propose(caller, { ...input, kind: "lifecycle" })),
+        ),
+      ),
+      bot_app_propose_outbound: McpToolAccess.actsAsCaller((input) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(apps.propose(caller, { ...input, kind: "outbound" })),
+        ),
+      ),
+      bot_app_get_outbound_handoff: McpToolAccess.actsAsCaller(({ opportunityId }) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(apps.outboundHandoff(caller, opportunityId)),
         ),
       ),
       bot_app_get_proposal: McpToolAccess.actsAsCaller(() =>

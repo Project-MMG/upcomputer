@@ -207,6 +207,7 @@ export class BotService extends Context.Service<
     readonly removal: (
       agentId: TaskAgentId,
     ) => Effect.Effect<{ readonly name: string; readonly memories: number } | null, TaskError>;
+    readonly forAgent: (id: TaskAgentId) => Effect.Effect<Bot | null, TaskError>;
     readonly forThread: (threadId: ThreadId) => Effect.Effect<Bot | null, TaskError>;
     /**
      * Why the thread may not move to the project, or null. A bot's chat follows its bot's
@@ -307,10 +308,14 @@ const make = Effect.gen(function* () {
       ),
     } satisfies Bot;
   });
-  const get = Effect.fn("BotService.get")(function* (id: TaskAgentId) {
+  const forAgent = Effect.fn("BotService.forAgent")(function* (id: TaskAgentId) {
     const row = (yield* rows).find((item) => item.agentId === id);
-    if (!row) return yield* fail("Bot was not found.");
-    return yield* decode(row);
+    return row ? yield* decode(row) : null;
+  }, Effect.mapError(asError));
+  const get = Effect.fn("BotService.get")(function* (id: TaskAgentId) {
+    const bot = yield* forAgent(id);
+    if (!bot) return yield* fail("Bot was not found.");
+    return bot;
   });
   // With no bots this is one read of an empty table, so threads of people who never made a
   // bot pay nothing more per turn.
@@ -1075,6 +1080,7 @@ const make = Effect.gen(function* () {
         ),
     ),
     followChatRenames: followChatRenames.pipe(Effect.mapError(asError)),
+    forAgent,
     forThread: Effect.fn("BotService.forThread")(function* (threadId) {
       return yield* forThread(threadId);
     }, Effect.mapError(asError)),

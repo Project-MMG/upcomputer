@@ -189,6 +189,9 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
   });
   return {
     proposeLifecycle: (args: Schema.JsonObject) => call("bot_app_propose_lifecycle", args),
+    proposeOutbound: (args: Schema.JsonObject) => call("bot_app_propose_outbound", args),
+    outboundHandoff: (opportunityId: string) =>
+      call("bot_app_get_outbound_handoff", { opportunityId }),
     proposePaidMedia: (args: Schema.JsonObject) => call("bot_app_propose_paid_media", args),
     proposeShopify: (args: Schema.JsonObject) => call("bot_app_propose_shopify_store", args),
     shopifyCatalog: () => call("bot_app_get_shopify_catalog_follow_ups", {}),
@@ -2341,5 +2344,170 @@ it.effect("reviews a Klaviyo email plan under the selected bot and verified acco
       status: "unavailable",
       revision: latest.revision,
     });
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("saves decisions on manual opportunities and releases only the scoped referral", () =>
+  Effect.gen(function* () {
+    const { backend, authenticate } = yield* Fixture;
+    const outbound = yield* addBot("Outbound", firstProject);
+    const inbox = yield* addBot("Inbox", firstProject);
+    const foreign = yield* addBot("Foreign Inbox", secondProject);
+    const target = {
+      projectId: firstProject,
+      botId: outbound.agent.id,
+      threadId: outbound.threadId,
+    };
+    const caller = yield* authenticate(outbound.threadId);
+    const other = yield* authenticate(inbox.threadId);
+    const anotherProject = yield* authenticate(foreign.threadId);
+    const link = {
+      id: "workshop",
+      title: "Workshop setup question",
+      source: {
+        kind: "link",
+        label: "Workshop thread",
+        url: "https://community.example.test/workshop",
+      },
+      reason: "The thread asks for a setup checklist.",
+      draftReply: "I can share our setup checklist if that would help.",
+      ownerId: outbound.agent.id,
+    } as const;
+    const support = {
+      id: "support",
+      title: "Missing workshop guide",
+      source: { kind: "export", label: "Group export", reference: "imports/group.csv, row 2" },
+      reason: "A customer needs help finding their guide.",
+      draftReply: "We can look up your guide through customer support.",
+      ownerId: inbox.agent.id,
+    } as const;
+    const title = "Opportunity queue";
+    expect(
+      code(
+        yield* caller.proposeOutbound({
+          title,
+          opportunities: [{ ...support, ownerId: foreign.agent.id }],
+        }),
+      ),
+    ).toBe("outbound-owner-unavailable");
+
+    const proposed = yield* caller.proposeOutbound({ title, opportunities: [link, support] });
+    expect(proposed.isError, proposed.content[0]?.text).not.toBe(true);
+    expect(content(proposed)).toMatchObject({ title });
+    expect(content(yield* caller.outboundHandoff(support.id))).toBeNull();
+    expect(content(yield* other.appProposal())).toBeNull();
+    expect(content(yield* anotherProject.appProposal())).toBeNull();
+
+    const reader = yield* botAppsClient([AuthOrchestrationReadScope]);
+    const operator = yield* botAppsClient([
+      AuthOrchestrationReadScope,
+      AuthOrchestrationOperateScope,
+    ]);
+    const state = operator[BOT_APPS_RPC_METHODS.state];
+    const review = operator[BOT_APPS_RPC_METHODS.review];
+    const draft = (yield* reader[BOT_APPS_RPC_METHODS.state](target)).proposal;
+    if (draft?.status !== "available") throw new Error("Expected a readable opportunity queue.");
+    expect(draft.snapshot).toMatchObject({
+      definition: {
+        opportunities: [
+          { ...link, ownerName: "Outbound", disposition: "pending" },
+          { ...support, ownerName: "Inbox", disposition: "pending" },
+        ],
+      },
+    });
+    expect(yield* Effect.flip(state({ ...target, botId: inbox.agent.id }))).toMatchObject({
+      code: "not-a-bot",
+    });
+    expect(yield* Effect.flip(state({ ...target, projectId: secondProject }))).toMatchObject({
+      code: "not-a-bot",
+    });
+    const approval = {
+      ...target,
+      revision: draft.snapshot.revision,
+      decision: {
+        kind: "approve-outbound",
+        decisions: [
+          { id: link.id, disposition: "keep-draft" },
+          { id: support.id, disposition: "handoff" },
+        ],
+        note: "Send the export reference to Inbox for review.",
+      },
+    } as const;
+    expect(yield* Effect.flip(reader[BOT_APPS_RPC_METHODS.review](approval))).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+    });
+    expect(
+      yield* Effect.flip(review({ ...approval, decision: { kind: "approve" } })),
+    ).toMatchObject({ code: "outbound-decisions-changed" });
+    expect(
+      yield* Effect.result(
+        review({
+          ...approval,
+          decision: {
+            ...approval.decision,
+            decisions: [{ id: link.id, disposition: "pending" }, approval.decision.decisions[1]],
+          },
+        }),
+      ),
+    ).toMatchObject({ _tag: "Failure", failure: { code: "outbound-decisions-pending" } });
+    expect(yield* state(target)).toEqual({ saved: null, proposal: draft });
+    expect(
+      yield* Effect.flip(
+        review({
+          ...approval,
+          decision: {
+            ...approval.decision,
+            decisions: [{ id: "other", disposition: "skip" }, approval.decision.decisions[1]],
+          },
+        }),
+      ),
+    ).toMatchObject({ code: "outbound-decisions-changed" });
+    expect(
+      yield* Effect.flip(
+        review({
+          ...approval,
+          decision: {
+            ...approval.decision,
+            decisions: [{ id: link.id, disposition: "handoff" }, approval.decision.decisions[1]],
+          },
+        }),
+      ),
+    ).toMatchObject({ code: "outbound-handoff-unavailable" });
+    yield* review({ ...approval, decision: { kind: "annotate", note: "Check the source." } });
+    expect(yield* Effect.flip(review(approval))).toMatchObject({ code: "proposal-changed" });
+    const latest = (yield* state(target)).proposal;
+    if (latest?.status !== "available")
+      throw new Error("Expected the annotated opportunity queue.");
+    yield* review({ ...approval, revision: latest.snapshot.revision });
+    expect(yield* state(target)).toMatchObject({
+      proposal: null,
+      saved: {
+        snapshot: {
+          note: approval.decision.note,
+          definition: {
+            opportunities: [
+              { ...link, disposition: "keep-draft" },
+              { ...support, disposition: "handoff" },
+            ],
+          },
+        },
+      },
+    });
+    expect(content(yield* caller.outboundHandoff(link.id))).toBeNull();
+    expect(content(yield* caller.outboundHandoff(support.id))).toEqual({
+      ...support,
+      ownerName: "Inbox",
+      disposition: "handoff",
+    });
+    expect(content(yield* other.outboundHandoff(support.id))).toBeNull();
+    expect(content(yield* anotherProject.outboundHandoff(support.id))).toBeNull();
+    const tasks = yield* TaskRepository;
+    yield* tasks.upsertAgent({ ...inbox.agent, enabled: false });
+    expect(code(yield* caller.outboundHandoff(support.id))).toBe("outbound-owner-unavailable");
+    yield* tasks.upsertAgent(inbox.agent);
+    expect(content(yield* caller.outboundHandoff(support.id))).toMatchObject({
+      ownerName: "Inbox",
+    });
+    expect(backend.calls).toHaveLength(0);
   }).pipe(Effect.provide(testLayer)),
 );

@@ -218,6 +218,15 @@ report and open the segment definition to review eligibility. Check the proposed
 draft, and success measure. **Save plan** keeps the reviewed proposal in Bot Apps. Manage any
 subsequent scheduling and audience changes in Klaviyo.
 
+## Triage outreach opportunities
+
+Give your bot the community links or local exports you want it to review. Ask it to propose an
+opportunity queue with a source, reason to engage, draft reply, and owner for each candidate.
+In **Bot Apps**, choose **Review proposal**, set a decision for each candidate, and save the queue.
+
+For a support request, choose **Refer to owner** on a candidate owned by your Inbox bot. Save the
+queue, then ask your bot to assign that referral in Tasks. The reply stays in draft.
+
 ## Remove a bot
 
 Click **Remove bot** at the bottom of the bot's page. This deletes its memory. Its chat goes back

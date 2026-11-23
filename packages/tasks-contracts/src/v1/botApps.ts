@@ -218,11 +218,71 @@ const lifecycleSnapshot = Schema.Struct({
 });
 export type LifecycleSnapshot = typeof lifecycleSnapshot.Type;
 
+export const OutboundOpportunityId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[a-zA-Z0-9_-]+$/),
+);
+
+const outboundDisposition = Schema.Literals(["pending", "keep-draft", "skip", "handoff"]);
+export type OutboundDisposition = typeof outboundDisposition.Type;
+
+const outboundCandidate = Schema.Struct({
+  id: OutboundOpportunityId,
+  title,
+  source: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("link"), label: title, url: httpUrl }),
+    Schema.Struct({
+      kind: Schema.Literal("export"),
+      label: title,
+      reference: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+    }),
+  ]),
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+  draftReply: TrimmedNonEmptyString.check(Schema.isMaxLength(2000)),
+  ownerId: TaskAgentId,
+});
+const outboundOpportunity = Schema.Struct({
+  ...outboundCandidate.fields,
+  ownerName: TrimmedNonEmptyString,
+  disposition: outboundDisposition,
+});
+export type OutboundOpportunity = typeof outboundOpportunity.Type;
+
+const uniqueOpportunityIds = Schema.makeFilter(
+  (items: ReadonlyArray<{ readonly id: string }>) =>
+    new Set(items.map(({ id }) => id)).size === items.length || "Expected unique opportunity IDs",
+);
+const outboundLimit = 12;
+export const OutboundProposalInput = Schema.Struct({
+  title,
+  opportunities: Schema.NonEmptyArray(outboundCandidate).check(
+    Schema.isMaxLength(outboundLimit),
+    uniqueOpportunityIds,
+  ),
+  replacesRevision: Schema.optionalKey(revision),
+});
+export type OutboundProposalInput = typeof OutboundProposalInput.Type;
+
+const outboundSnapshot = Schema.Struct({
+  kind: Schema.Literal("outbound"),
+  definition: Schema.Struct({
+    title,
+    opportunities: Schema.NonEmptyArray(outboundOpportunity).check(
+      Schema.isMaxLength(outboundLimit),
+      uniqueOpportunityIds,
+    ),
+  }),
+  revision,
+  note,
+});
+export type OutboundSnapshot = typeof outboundSnapshot.Type;
+
 export const SingleSourceBotAppSnapshot = Schema.Union([
   searchConsoleSnapshot,
   socialCalendarSnapshot,
   shopifyStoreSnapshot,
   lifecycleSnapshot,
+  outboundSnapshot,
 ]);
 export const BotAppSnapshot = Schema.Union([
   ...SingleSourceBotAppSnapshot.members,
@@ -246,6 +306,13 @@ export const BotAppReviewInput = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("annotate"), note }),
     Schema.Struct({ kind: Schema.Literal("annotate-caption"), channel: socialChannel, note }),
     Schema.Struct({ kind: Schema.Literal("approve") }),
+    Schema.Struct({
+      kind: Schema.Literal("approve-outbound"),
+      decisions: Schema.Array(
+        Schema.Struct({ id: OutboundOpportunityId, disposition: outboundDisposition }),
+      ).check(Schema.isMaxLength(outboundLimit), uniqueOpportunityIds),
+      note,
+    }),
     Schema.Struct({ kind: Schema.Literal("dismiss") }),
     Schema.Struct({ kind: Schema.Literal("remove") }),
   ]),
@@ -273,6 +340,10 @@ const messages = {
   "paid-media-budget-unchanged": "The proposed daily budget matches the current budget.",
   "postiz-response-invalid": "Postiz returned an unrecognized channel list.",
   "postiz-destination-unavailable": "Postiz could not verify a selected channel destination.",
+  "outbound-owner-unavailable": "Choose an enabled owner in this project for the opportunity.",
+  "outbound-decisions-changed": "Review the decisions for the latest opportunity queue.",
+  "outbound-decisions-pending": "Choose a decision for every opportunity before saving.",
+  "outbound-handoff-unavailable": "Choose a different owner before referring this opportunity.",
 } as const;
 
 export class BotAppError extends Schema.TaggedError<BotAppError>()("BotAppError", {

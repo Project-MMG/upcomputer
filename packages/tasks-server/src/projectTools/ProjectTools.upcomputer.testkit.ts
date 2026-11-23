@@ -10,6 +10,11 @@ import {
   gmailApp,
   gmailFixtureKey,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
+import {
+  searchAction,
+  searchApp,
+  websiteReport,
+} from "../../../../scripts/scenarios/fixtures/website-bot-app-data.ts";
 
 export const read = "FIXTURE_READ_REPO";
 export const write = "FIXTURE_CREATE_REPO_NOTE";
@@ -96,6 +101,7 @@ export const makeComposioFixture = () => {
     tool(publicRead, "List public items", ["readOnlyHint"], false, {}),
     tool(unknownEffect, "Unclassified operation", [], true, {}),
     ...gmailActions,
+    searchAction,
   ];
   const apps = [
     {
@@ -108,9 +114,11 @@ export const makeComposioFixture = () => {
     { slug: "public", name: "Public", no_auth: true },
     { slug: "config", name: "Needs configuration", no_auth: false },
     gmailApp,
+    searchApp,
   ];
   let sequence = 0;
   let nextWriteFailure: { readonly slug: string; readonly status: number } | undefined;
+  let searchReport: unknown = websiteReport;
   let nextSessionGate:
     | {
         readonly slug: string | undefined;
@@ -271,10 +279,13 @@ export const makeComposioFixture = () => {
         }
         return response({
           result_type: "completed",
-          data: gmailActionData(input.tool_slug, input.arguments.thread_id) ?? {
-            slug: input.tool_slug,
-            arguments: input.arguments,
-          },
+          data:
+            input.tool_slug === searchAction.slug
+              ? searchReport
+              : (gmailActionData(input.tool_slug, input.arguments.thread_id) ?? {
+                  slug: input.tool_slug,
+                  arguments: input.arguments,
+                }),
         });
       }
       return response({}, 404);
@@ -287,6 +298,9 @@ export const makeComposioFixture = () => {
     accounts,
     catalogRequests,
     sessions,
+    setSearchReport: (report: unknown) => {
+      searchReport = report;
+    },
     hideAction: (slug: string) => {
       const index = tools.findIndex((item) => item.slug === slug);
       if (index !== -1) tools.splice(index, 1);

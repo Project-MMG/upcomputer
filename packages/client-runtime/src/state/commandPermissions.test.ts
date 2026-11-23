@@ -187,6 +187,7 @@ describe("command permissions", () => {
     { method: "upcomputer.gmail-workspace.v1.updateDraft", scope: AuthOrchestrationOperateScope },
     { method: "upcomputer.gmail-workspace.v1.annotate", scope: AuthOrchestrationOperateScope },
     { method: "upcomputer.gmail-workspace.v1.approveDraft", scope: AuthOrchestrationOperateScope },
+    { method: "upcomputer.bot-apps.v1.review", scope: AuthOrchestrationOperateScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.gen(function* () {
       const registry = yield* setup;

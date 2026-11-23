@@ -2212,7 +2212,13 @@ it.live(
           SELECT name FROM sqlite_master WHERE type = 'table'
         `).map((row) => row.name),
         );
-        for (const table of ["tasks", "task_agents", "task_agent_runs", "task_automations"]) {
+        for (const table of [
+          "tasks",
+          "task_agents",
+          "task_agent_runs",
+          "task_automations",
+          "bot_apps",
+        ]) {
           assert.isTrue(tables.has(table), `${table} exists`);
         }
         const ledger = yield* sql<{ readonly version: number }>`
@@ -2237,6 +2243,8 @@ it.live(
             "gmail_workspace_check",
             "gmail_workspace_record_reply",
             "gmail_workspace_apply_annotation",
+            "bot_app_get_proposal",
+            "bot_app_propose",
           ]),
         );
 

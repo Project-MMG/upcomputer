@@ -19,6 +19,8 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import {
+  BOT_APPS_RPC_METHODS,
+  BotAppsRpcGroup,
   GMAIL_WORKSPACE_RPC_METHODS,
   GmailWorkspaceRpcGroup,
   type GmailWorkspaceAnnotationInput,
@@ -62,6 +64,9 @@ import {
 } from "../../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import { TaskAgentService } from "../agents/TaskAgentService.ts";
 import * as Bots from "../bots/BotService.ts";
+import * as BotApps from "../botApps/BotApps.ts";
+import * as BotAppsMcp from "../botApps/mcp.ts";
+import { BOT_APPS_RPC_CONTRIBUTION } from "../botApps/rpc.ts";
 import * as GmailWorkspace from "../gmailWorkspace/GmailWorkspace.ts";
 import * as GmailWorkspaceMcp from "../gmailWorkspace/mcp.ts";
 import { GMAIL_WORKSPACE_RPC_CONTRIBUTION } from "../gmailWorkspace/rpc.ts";
@@ -72,6 +77,12 @@ import {
   gmailThreadAction,
   receipt,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
+import {
+  searchAction,
+  searchApp,
+  websiteProposal,
+  websiteReport,
+} from "../../../../scripts/scenarios/fixtures/website-bot-app-data.ts";
 import { TaskRepository } from "../persistence/TaskRepository.ts";
 import { TaskRepositoryLive } from "../persistence/TaskRepositoryLive.ts";
 import { TASKS_SERVER_FEATURE } from "../serverFeature.ts";
@@ -145,6 +156,8 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
     return body.result;
   });
   return {
+    proposeApp: (args: Schema.JsonObject) => call("bot_app_propose", args),
+    appProposal: () => call("bot_app_get_proposal", {}),
     saveWorkspace: (args: Schema.JsonObject) => call("gmail_workspace_save", args),
     checkWorkspace: () => call("gmail_workspace_check", {}),
     recordReply: (args: Schema.JsonObject) => call("gmail_workspace_record_reply", args),
@@ -305,7 +318,7 @@ const fixtureLayer = Layer.unwrap(
       Layer.provide(BackgroundNotices.layer),
     );
     const services = Layer.merge(
-      GmailWorkspace.layer.pipe(
+      Layer.merge(GmailWorkspace.layer, BotApps.layer).pipe(
         Layer.provideMerge(ProjectTools.layer),
         Layer.provide(Composio.layer.pipe(Layer.provide(backend.layer))),
         Layer.provideMerge(botLayer),
@@ -313,10 +326,9 @@ const fixtureLayer = Layer.unwrap(
       schedules,
     ).pipe(Layer.provideMerge(database), Layer.provideMerge(configuration));
     const router = HttpRouter.serve(
-      McpHttp.layerMcpTransport(Layer.merge(ProjectToolMcp.layer, GmailWorkspaceMcp.layer)).pipe(
-        Layer.provide(services),
-        Layer.provide(ServerSettings.layerTest()),
-      ),
+      McpHttp.layerMcpTransport(
+        Layer.mergeAll(ProjectToolMcp.layer, GmailWorkspaceMcp.layer, BotAppsMcp.layer),
+      ).pipe(Layer.provide(services), Layer.provide(ServerSettings.layerTest())),
       { disableListenLog: true, disableLogger: true },
     );
 
@@ -1317,6 +1329,216 @@ it.effect("gives three bots full access, no access, and one action for the same 
       apps: [expect.objectContaining({ slug: "fixture" })],
     });
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "reviews a report against its assigned property, account, and exact proposal revision",
+  () =>
+    Effect.gen(function* () {
+      const tools = yield* ProjectTools.ProjectTools;
+      const { backend, authenticate, enableComposio } = yield* Fixture;
+      enableComposio();
+      const website = yield* addBot("Website", firstProject);
+      const other = yield* addBot("Other", firstProject);
+      const elsewhere = yield* addBot("Elsewhere", secondProject);
+      const owner = {
+        threadId: website.threadId,
+        botId: website.agent.id,
+        projectId: firstProject,
+      };
+      const api = yield* authenticate(website.threadId);
+      const otherApi = yield* authenticate(other.threadId);
+      const connection = { projectId: firstProject, app: searchApp.slug };
+      yield* tools.connection({ ...connection, operation: "start" });
+      const account = Array.from(backend.accounts.values())[0]!;
+      account.status = "ACTIVE";
+      account.label = "Assigned Search Console";
+      backend.accounts.set("ambient", {
+        ...account,
+        id: "ambient",
+        label: "Ambient Search Console",
+      });
+      yield* tools.connection({ ...connection, operation: "finish" });
+
+      const grant = {
+        projectId: firstProject,
+        slug: searchAction.slug,
+        fixedInputs: { site_url: websiteProposal.source.property },
+        audience: { kind: "selected", botIds: [website.agent.id] } as const,
+      };
+      yield* tools.grantApp({ ...connection, audience: grant.audience });
+      expect(code(yield* api.proposeApp(websiteProposal))).toBe("fixed-inputs-required");
+      yield* tools.grantApp({ ...connection, audience: null });
+      yield* tools.grant(grant);
+      expect(
+        code(
+          yield* api.proposeApp({
+            ...websiteProposal,
+            source: { ...websiteProposal.source, property: "sc-domain:ambient.example.test" },
+          }),
+        ),
+      ).toBe("fixed-inputs-required");
+      expect(code(yield* otherApi.proposeApp(websiteProposal))).toBe("not-assigned");
+      expect(backend.calls).toHaveLength(0);
+      expect(content(yield* api.proposeApp(websiteProposal))).toMatchObject({
+        title: websiteProposal.title,
+      });
+      expect(backend.calls).toEqual([
+        expect.objectContaining({
+          userId: account.user_id,
+          slug: searchAction.slug,
+          account: account.id,
+          arguments: expect.objectContaining({
+            site_url: websiteProposal.source.property,
+            row_limit: 1,
+          }),
+        }),
+      ]);
+
+      const client = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+        RpcTest.makeClient(BotAppsRpcGroup.middleware(RpcScopeAuthorization)).pipe(
+          Effect.provide(
+            Layer.merge(
+              BOT_APPS_RPC_CONTRIBUTION.handlers({ currentSessionId: approvalSession }),
+              RpcAuthorization.layer(
+                scopes,
+                new Map(Object.entries(BOT_APPS_RPC_CONTRIBUTION.requiredScopes)),
+              ),
+            ),
+          ),
+        );
+      const reader = yield* client([AuthOrchestrationReadScope]);
+      const operator = yield* client([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+      const getState = operator[BOT_APPS_RPC_METHODS.state];
+      const review = operator[BOT_APPS_RPC_METHODS.review];
+      const { proposal, saved } = yield* getState(owner);
+      expect(saved).toBeNull();
+      if (proposal?.status !== "available") throw new Error("Expected an available proposal");
+      expect(proposal.snapshot).toMatchObject({
+        definition: websiteProposal,
+        report: {
+          accountLabel: account.label,
+          metrics: [
+            { label: "Clicks", value: 18 },
+            { label: "Impressions", value: 620 },
+          ],
+        },
+      });
+      const input = { ...owner, revision: proposal.snapshot.revision };
+      const decision = { kind: "approve" } as const;
+      expect(
+        yield* Effect.flip(reader[BOT_APPS_RPC_METHODS.review]({ ...input, decision })),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+      expect(yield* Effect.flip(getState({ ...owner, botId: other.agent.id }))).toMatchObject({
+        code: "not-a-bot",
+      });
+      expect(yield* Effect.flip(getState({ ...owner, projectId: secondProject }))).toMatchObject({
+        code: "not-a-bot",
+      });
+      expect(
+        yield* getState({
+          projectId: secondProject,
+          threadId: elsewhere.threadId,
+          botId: elsewhere.agent.id,
+        }),
+      ).toEqual({ saved: null, proposal: null });
+      yield* review({
+        ...input,
+        decision: { kind: "annotate", note: "Show which sizes are supported." },
+      });
+      expect(yield* Effect.flip(review({ ...input, decision }))).toMatchObject({
+        code: "proposal-changed",
+      });
+      const annotated = (yield* getState(owner)).proposal;
+      if (annotated?.status !== "available") throw new Error("Expected a review note");
+      expect(content(yield* api.appProposal())).toMatchObject({
+        note: "Show which sizes are supported.",
+      });
+      yield* review({ ...owner, revision: annotated.snapshot.revision, decision });
+      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: null });
+      expect(backend.calls).toHaveLength(1);
+
+      backend.setSearchReport({ responseAggregationType: "byPage" });
+      expect(code(yield* api.proposeApp(websiteProposal))).toBe("report-empty");
+      backend.setSearchReport({
+        ...websiteReport,
+        rows: [{ ...websiteReport.rows[0], keys: ["https://ambient.example.test/"] }],
+      });
+      expect(code(yield* api.proposeApp(websiteProposal))).toBe("report-invalid");
+      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: null });
+      backend.setSearchReport({ successful: true, data: websiteReport });
+      const revised = content(yield* api.proposeApp(websiteProposal));
+      const revision = Schema.decodeUnknownEffect(Schema.Struct({ revision: Schema.String }));
+      yield* review({
+        ...owner,
+        ...(yield* revision(revised)),
+        decision: { kind: "annotate", note: "Check the October 1 count." },
+      });
+      const previous = yield* revision(content(yield* api.appProposal()));
+      expect(
+        content(
+          yield* api.proposeApp({
+            ...websiteProposal,
+            source: {
+              ...websiteProposal.source,
+              window: { start: "2026-10-02", end: "2026-10-31" },
+            },
+            replacesRevision: previous.revision,
+          }),
+        ),
+      ).toMatchObject({ title: websiteProposal.title });
+      const pending = (yield* getState(owner)).proposal;
+      expect(pending).toMatchObject({ status: "available", snapshot: { note: "" } });
+      expect((yield* getState(owner)).saved).toEqual(annotated);
+      if (pending?.status !== "available") throw new Error("Expected a pending replacement");
+      expect(
+        yield* Effect.flip(
+          review({
+            ...owner,
+            revision: pending.snapshot.revision,
+            decision: { kind: "remove" },
+          }),
+        ),
+      ).toMatchObject({ code: "saved-app-changed" });
+
+      yield* tools.grant({ ...grant, audience: null });
+      expect(yield* getState(owner)).toEqual({
+        saved: { status: "unavailable", revision: annotated.snapshot.revision },
+        proposal: { status: "unavailable", revision: pending.snapshot.revision },
+      });
+      expect(
+        yield* Effect.flip(review({ ...owner, revision: pending.snapshot.revision, decision })),
+      ).toMatchObject({ code: "not-assigned" });
+      yield* tools.grant(grant);
+      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: pending });
+      yield* tools.connection({ ...connection, operation: "disconnect" });
+      yield* tools.connection({ ...connection, operation: "start" });
+      const replacement = Array.from(backend.accounts.values()).find(
+        ({ status }) => status === "INITIATED",
+      )!;
+      replacement.status = "ACTIVE";
+      replacement.label = account.label;
+      yield* tools.connection({ ...connection, operation: "finish" });
+      expect((yield* getState(owner)).saved?.status).toBe("unavailable");
+      expect(
+        yield* Effect.flip(review({ ...owner, revision: pending.snapshot.revision, decision })),
+      ).toMatchObject({ code: "source-unavailable" });
+      yield* review({
+        ...owner,
+        revision: annotated.snapshot.revision,
+        decision: { kind: "remove" },
+      });
+      expect(yield* getState(owner)).toEqual({
+        saved: null,
+        proposal: { status: "unavailable", revision: pending.snapshot.revision },
+      });
+      yield* review({
+        ...owner,
+        revision: pending.snapshot.revision,
+        decision: { kind: "dismiss" },
+      });
+      expect((yield* getState(owner)).proposal).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
 );
 
 it.effect("applies bot grants to an own background run and a schedule bound to its chat", () =>

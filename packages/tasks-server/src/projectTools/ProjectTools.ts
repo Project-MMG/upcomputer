@@ -51,6 +51,9 @@ type ActionInput = {
   readonly slug: string;
   readonly arguments: Schema.JsonObject;
 };
+type ConnectedReadInput = ActionInput & {
+  readonly requiredFixedInputs?: Schema.JsonObject;
+};
 type ConnectedAction = { readonly app: string; readonly expectedAccountId?: string | undefined };
 const gmailReplySlug = "GMAIL_REPLY_TO_THREAD";
 const isGmailWrite = (action: ProjectToolAction) =>
@@ -140,7 +143,7 @@ export class ProjectTools extends Context.Service<
     readonly readConnectedBotAction: (
       caller: BotReadCaller,
       app: string,
-      input: ActionInput,
+      input: ConnectedReadInput,
       expectedAccountId?: string,
     ) => Effect.Effect<
       { readonly accountId: string; readonly accountLabel: string; readonly data: Schema.Json },
@@ -158,12 +161,12 @@ export class ProjectTools extends Context.Service<
         execute: Effect.Effect<Schema.Json, ProjectToolError>,
       ) => Effect.Effect<A, ProjectToolError>,
     ) => Effect.Effect<A, ProjectToolError>;
-    readonly withConnectedBotReadAccess: <A>(
+    readonly withConnectedBotReadAccess: <A, E>(
       caller: BotReadCaller,
       app: string,
-      inputs: readonly [ActionInput, ...ActionInput[]],
-      use: (accountId: string) => Effect.Effect<A, ProjectToolError>,
-    ) => Effect.Effect<A, ProjectToolError>;
+      inputs: readonly [ConnectedReadInput, ...ConnectedReadInput[]],
+      use: (accountId: string) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, ProjectToolError | E>;
   }
 >()("@t3tools/tasks-server/projectTools/ProjectTools") {}
 
@@ -374,10 +377,21 @@ const make = Effect.gen(function* () {
   const connectedAccountId = Effect.fn("ProjectTools.connectedAccountId")(function* (
     access: Effect.Success<ReturnType<typeof loadAccess>>,
     app: string,
-    input: ActionInput,
+    input: ConnectedReadInput,
   ) {
     if (access.live.app !== app || access.accountId === null) {
       return yield* fail("account-unavailable");
+    }
+    const { requiredFixedInputs } = input;
+    if (
+      requiredFixedInputs !== undefined &&
+      (Object.entries(requiredFixedInputs).some(
+        ([key, value]) =>
+          !Object.hasOwn(access.fixedInputs, key) || !Equal.equals(access.fixedInputs[key], value),
+      ) ||
+        Object.keys(access.fixedInputs).some((key) => !Object.hasOwn(input.arguments, key)))
+    ) {
+      return yield* fail("fixed-inputs-required");
     }
     if (
       Object.entries(input.arguments).some(
@@ -385,7 +399,9 @@ const make = Effect.gen(function* () {
           Object.hasOwn(access.fixedInputs, key) && !Equal.equals(access.fixedInputs[key], value),
       )
     ) {
-      return yield* fail("workspace-input-conflict");
+      return yield* fail(
+        requiredFixedInputs ? "fixed-inputs-required" : "workspace-input-conflict",
+      );
     }
     return access.accountId;
   });
@@ -397,7 +413,7 @@ const make = Effect.gen(function* () {
   const withActionSession = Effect.fn("ProjectTools.withActionSession")(function* <A>(
     authorize: Effect.Effect<ActionCaller, ProjectToolError>,
     effect: ProjectToolAction["effect"],
-    input: ActionInput,
+    input: ConnectedReadInput,
     use: (
       execute: Effect.Effect<Schema.Json, ProjectToolError>,
     ) => Effect.Effect<A, ProjectToolError>,
@@ -830,11 +846,14 @@ const make = Effect.gen(function* () {
           { app: "gmail", expectedAccountId: accountId },
         ).pipe(Effect.map(({ data }) => data)),
     ),
-    withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(function* <A>(
+    withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(function* <
+      A,
+      E,
+    >(
       caller: BotReadCaller,
       app: string,
-      [first, ...rest]: readonly [ActionInput, ...ActionInput[]],
-      use: (accountId: string) => Effect.Effect<A, ProjectToolError>,
+      [first, ...rest]: readonly [ConnectedReadInput, ...ConnectedReadInput[]],
+      use: (accountId: string) => Effect.Effect<A, E>,
     ) {
       const authorize = authorizeBotRead(caller);
       const initial = yield* authorize;
@@ -844,7 +863,7 @@ const make = Effect.gen(function* () {
           const owner = yield* authorize;
           if (!sameCaller(owner, initial)) return yield* fail("policy-changed");
           const checkAction = Effect.fn("ProjectTools.checkConnectedAction")(function* (
-            input: ActionInput,
+            input: ConnectedReadInput,
           ) {
             const access = yield* loadAccess(owner, "read", input.slug);
             return yield* connectedAccountId(access, app, input);

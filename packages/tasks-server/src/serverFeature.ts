@@ -36,6 +36,9 @@ import { PROJECT_TOOLS_RPC_CONTRIBUTION } from "./projectTools/rpc.ts";
 import * as GmailWorkspace from "./gmailWorkspace/GmailWorkspace.ts";
 import * as GmailWorkspaceMcp from "./gmailWorkspace/mcp.ts";
 import { GMAIL_WORKSPACE_RPC_CONTRIBUTION } from "./gmailWorkspace/rpc.ts";
+import * as BotApps from "./botApps/BotApps.ts";
+import * as BotAppsMcp from "./botApps/mcp.ts";
+import { BOT_APPS_RPC_CONTRIBUTION } from "./botApps/rpc.ts";
 
 const TASKS_FEATURE_ID = "upcomputer.tasks";
 
@@ -84,7 +87,7 @@ export const TASKS_SERVER_FEATURE = defineExperimentalServerFeature({
           TaskChatToolHintsLive,
           BotContextLive,
           TaskFeatureCountsLive,
-          GmailWorkspace.layer.pipe(
+          Layer.merge(GmailWorkspace.layer, BotApps.layer).pipe(
             Layer.provideMerge(ProjectTools.layer.pipe(Layer.provide(Composio.layer))),
           ),
         ).pipe(Layer.provideMerge(TaskServicesLive)),
@@ -102,6 +105,7 @@ export const TASKS_SERVER_FEATURE = defineExperimentalServerFeature({
           BotMcpToolsLive,
           ProjectToolMcp.layer,
           GmailWorkspaceMcp.layer,
+          BotAppsMcp.layer,
         ),
       ),
     },
@@ -111,5 +115,6 @@ export const TASKS_SERVER_FEATURE = defineExperimentalServerFeature({
     BOTS_RPC_CONTRIBUTION,
     PROJECT_TOOLS_RPC_CONTRIBUTION,
     GMAIL_WORKSPACE_RPC_CONTRIBUTION,
+    BOT_APPS_RPC_CONTRIBUTION,
   ],
 });

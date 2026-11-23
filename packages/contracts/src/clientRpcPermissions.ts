@@ -85,6 +85,7 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 // Feature RPCs are outside the core WS group, so the server's core scope table must not
 // list them; their server contributions declare the same scopes.
 const CLIENT_GUARDED_FEATURE_RPC_SCOPES = {
+  "upcomputer.bot-apps.v1.review": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.save": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.remove": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.remember": AuthOrchestrationOperateScope,

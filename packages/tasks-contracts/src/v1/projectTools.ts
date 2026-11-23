@@ -158,6 +158,7 @@ const messages = {
     "Fixed inputs must use fields and values from this action's input schema.",
   "invalid-arguments": "The action arguments do not match its input schema.",
   "policy-changed": "The bot's project tool access changed while preparing the action.",
+  "fixed-inputs-required": "Assign the individual read action with the requested fixed inputs.",
   "workspace-unavailable": "This bot chat does not have a Gmail workspace.",
   "workspace-input-conflict":
     "A fixed project tool input conflicts with the Gmail workspace request.",

@@ -78,6 +78,11 @@ import {
   receipt,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import {
+  postizAction,
+  postizApp,
+  socialProposal,
+} from "../../../../scripts/scenarios/fixtures/social-calendar-data.ts";
+import {
   searchAction,
   searchApp,
   websiteProposal,
@@ -157,6 +162,7 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
   });
   return {
     proposeApp: (args: Schema.JsonObject) => call("bot_app_propose", args),
+    proposeCalendar: (args: Schema.JsonObject) => call("bot_app_propose_social_calendar", args),
     appProposal: () => call("bot_app_get_proposal", {}),
     saveWorkspace: (args: Schema.JsonObject) => call("gmail_workspace_save", args),
     checkWorkspace: () => call("gmail_workspace_check", {}),
@@ -401,6 +407,19 @@ const code = (result: {
 };
 
 const approvalSession = AuthSessionId.make("gmail-reviewer");
+const botAppsClient = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+  RpcTest.makeClient(BotAppsRpcGroup.middleware(RpcScopeAuthorization)).pipe(
+    Effect.provide(
+      Layer.merge(
+        BOT_APPS_RPC_CONTRIBUTION.handlers({ currentSessionId: approvalSession }),
+        RpcAuthorization.layer(
+          scopes,
+          new Map(Object.entries(BOT_APPS_RPC_CONTRIBUTION.requiredScopes)),
+        ),
+      ),
+    ),
+  );
+
 const approveMethod = GMAIL_WORKSPACE_RPC_METHODS.approveDraft;
 const annotateMethod = GMAIL_WORKSPACE_RPC_METHODS.annotate;
 const gmailWorkspaceClient = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -1395,20 +1414,11 @@ it.effect(
         }),
       ]);
 
-      const client = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
-        RpcTest.makeClient(BotAppsRpcGroup.middleware(RpcScopeAuthorization)).pipe(
-          Effect.provide(
-            Layer.merge(
-              BOT_APPS_RPC_CONTRIBUTION.handlers({ currentSessionId: approvalSession }),
-              RpcAuthorization.layer(
-                scopes,
-                new Map(Object.entries(BOT_APPS_RPC_CONTRIBUTION.requiredScopes)),
-              ),
-            ),
-          ),
-        );
-      const reader = yield* client([AuthOrchestrationReadScope]);
-      const operator = yield* client([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+      const reader = yield* botAppsClient([AuthOrchestrationReadScope]);
+      const operator = yield* botAppsClient([
+        AuthOrchestrationReadScope,
+        AuthOrchestrationOperateScope,
+      ]);
       const getState = operator[BOT_APPS_RPC_METHODS.state];
       const review = operator[BOT_APPS_RPC_METHODS.review];
       const { proposal, saved } = yield* getState(owner);
@@ -1539,6 +1549,191 @@ it.effect(
       });
       expect((yield* getState(owner)).proposal).toBeNull();
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("reviews Social captions for the scoped destinations and keeps the asset approval", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const { backend, authenticate, enableComposio } = yield* Fixture;
+    enableComposio();
+    const social = yield* addBot("Social", firstProject);
+    const other = yield* addBot("Other", firstProject);
+    const target = { threadId: social.threadId, botId: social.agent.id, projectId: firstProject };
+    const api = yield* authenticate(social.threadId);
+    const otherApi = yield* authenticate(other.threadId);
+    const connection = { projectId: firstProject, app: postizApp.slug };
+    yield* tools.connection({ ...connection, operation: "start" });
+    const account = Array.from(backend.accounts.values())[0]!;
+    account.status = "ACTIVE";
+    account.label = "Assigned workspace";
+    backend.accounts.set("ambient", { ...account, id: "ambient", label: "Personal workspace" });
+    yield* tools.connection({ ...connection, operation: "finish" });
+    expect(code(yield* api.proposeCalendar(socialProposal))).toBe("not-assigned");
+    const grant = {
+      projectId: firstProject,
+      slug: postizAction.slug,
+      fixedInputs: { group: socialProposal.source.group },
+      audience: { kind: "selected", botIds: [social.agent.id] } as const,
+    };
+    yield* tools.grant(grant);
+    expect(code(yield* otherApi.proposeCalendar(socialProposal))).toBe("not-assigned");
+    expect(
+      code(
+        yield* api.proposeCalendar({
+          ...socialProposal,
+          source: { kind: "postiz", group: "another-workspace" },
+        }),
+      ),
+    ).toBe("fixed-inputs-required");
+    expect(backend.calls).toHaveLength(0);
+
+    const { asset, posts } = socialProposal.contentPackage;
+    const [facebook, instagram, ...rest] = posts;
+    expect(
+      code(
+        yield* api.proposeCalendar({
+          ...socialProposal,
+          contentPackage: { asset, posts: [{ ...facebook, destination: instagram.destination }] },
+        }),
+      ),
+    ).toBe("postiz-destination-unavailable");
+    const operator = yield* botAppsClient([
+      AuthOrchestrationReadScope,
+      AuthOrchestrationOperateScope,
+    ]);
+    const state = operator[BOT_APPS_RPC_METHODS.state];
+    const review = operator[BOT_APPS_RPC_METHODS.review];
+    expect(yield* state(target)).toEqual({ proposal: null, saved: null });
+    expect(yield* Effect.flip(state({ ...target, projectId: secondProject }))).toMatchObject({
+      code: "not-a-bot",
+    });
+
+    expect(content(yield* api.proposeCalendar(socialProposal))).toMatchObject({
+      title: socialProposal.title,
+    });
+    const original = (yield* state(target)).proposal;
+    if (original?.status !== "available") throw new Error("Expected a Social calendar");
+    expect(original.snapshot).toMatchObject({
+      kind: "social-calendar",
+      definition: { contentPackage: { asset, posts } },
+      report: {
+        accountLabel: account.label,
+        destinations: [
+          { integrationId: facebook.destination.integrationId, label: "Workshop Facebook" },
+          { integrationId: instagram.destination.integrationId, label: "Workshop Instagram" },
+          { integrationId: "workshop-yt", label: "Workshop YouTube" },
+        ],
+      },
+    });
+    const approve = { kind: "approve" } as const;
+    yield* review({ ...target, revision: original.snapshot.revision, decision: approve });
+    content(yield* api.proposeCalendar(socialProposal));
+    const draft = (yield* state(target)).proposal;
+    if (draft?.status !== "available") throw new Error("Expected a package draft");
+    const note = "Lead with the dry fit.";
+    yield* review({
+      ...target,
+      revision: draft.snapshot.revision,
+      decision: { kind: "annotate-caption", channel: "instagram", note },
+    });
+    expect(
+      yield* Effect.flip(
+        review({
+          ...target,
+          revision: draft.snapshot.revision,
+          decision: approve,
+        }),
+      ),
+    ).toMatchObject({ code: "proposal-changed" });
+    const annotated = (yield* state(target)).proposal;
+    if (annotated?.status !== "available") throw new Error("Expected an annotated caption");
+    expect(content(yield* api.appProposal())).toMatchObject({
+      captionNotes: [{ channel: "instagram", note }],
+    });
+
+    const updated = { ...socialProposal, replacesRevision: annotated.snapshot.revision };
+    expect(
+      code(
+        yield* api.proposeCalendar({
+          ...updated,
+          contentPackage: {
+            posts,
+            asset: {
+              ...asset,
+              approval: { ...asset.approval, approvedAt: "2026-11-21T16:00:00Z" },
+            },
+          },
+        }),
+      ),
+    ).toBe("asset-approval-changed");
+    const revisedPosts = [facebook, { ...instagram, caption: "Start with a dry fit." }, ...rest];
+    content(
+      yield* api.proposeCalendar({ ...updated, contentPackage: { asset, posts: revisedPosts } }),
+    );
+    const revised = (yield* state(target)).proposal;
+    if (revised?.status !== "available") throw new Error("Expected a revised package");
+    expect(revised.snapshot).toMatchObject({
+      definition: { contentPackage: { asset, posts: revisedPosts } },
+      captionNotes: [{ channel: "instagram", note }],
+    });
+    expect((yield* state(target)).saved).toEqual(original);
+    expect(
+      yield* Effect.flip(
+        review({
+          ...target,
+          revision: annotated.snapshot.revision,
+          decision: approve,
+        }),
+      ),
+    ).toMatchObject({ code: "proposal-changed" });
+
+    yield* tools.grant({ ...grant, audience: null });
+    const unavailable = yield* state(target);
+    expect(unavailable.saved?.status).toBe("unavailable");
+    expect(unavailable.proposal?.status).toBe("unavailable");
+    expect(
+      yield* Effect.flip(
+        review({
+          ...target,
+          revision: revised.snapshot.revision,
+          decision: approve,
+        }),
+      ),
+    ).toMatchObject({ code: "not-assigned" });
+    yield* tools.grant(grant);
+    expect(yield* state(target)).toEqual({ saved: original, proposal: revised });
+    expect(backend.calls).toHaveLength(4);
+    for (const call of backend.calls) {
+      expect(call).toEqual({
+        userId: account.user_id,
+        slug: postizAction.slug,
+        account: account.id,
+        arguments: grant.fixedInputs,
+      });
+    }
+
+    yield* tools.grant({ ...grant, audience: null });
+    yield* review({
+      ...target,
+      revision: revised.snapshot.revision,
+      decision: { kind: "dismiss" },
+    });
+    content(
+      yield* api.proposeCalendar({
+        ...socialProposal,
+        source: { kind: "local" },
+        contentPackage: {
+          asset,
+          posts: [{ ...instagram, destination: { kind: "local", label: "Local Instagram" } }],
+        },
+      }),
+    );
+    expect((yield* state(target)).proposal).toMatchObject({
+      status: "available",
+      snapshot: { report: null, definition: { source: { kind: "local" } } },
+    });
+    expect(backend.calls).toHaveLength(4);
+  }).pipe(Effect.provide(testLayer)),
 );
 
 it.effect("applies bot grants to an own background run and a schedule bound to its chat", () =>

@@ -6,6 +6,7 @@ import {
   type BotAppReviewInput,
   type BotAppState,
   type BotAppTarget,
+  type SocialCalendarProposalInput,
 } from "@t3tools/tasks-contracts/v1";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -18,13 +19,15 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
+import { postizSourceAction, readPostizDestinations } from "./postiz.ts";
 import { readMetrics, sourceAction } from "./searchConsole.ts";
 
 type Invocation = McpInvocationContext["Service"];
 type AppError = BotAppError | ProjectToolError;
+type SocialProposal = SocialCalendarProposalInput & { readonly kind: "social-calendar" };
 type StoredApp = typeof storedApp.Type;
 const storedApp = Schema.fromJsonString(
-  Schema.Struct({ accountId: Schema.NonEmptyString, snapshot: BotAppSnapshot }),
+  Schema.Struct({ accountId: Schema.NullOr(Schema.NonEmptyString), snapshot: BotAppSnapshot }),
 );
 const decode = Schema.decodeUnknownEffect(storedApp);
 const encode = Schema.encodeEffect(storedApp);
@@ -37,7 +40,7 @@ export class BotApps extends Context.Service<
     readonly proposal: (caller: Invocation) => Effect.Effect<BotAppSnapshot | null, AppError>;
     readonly propose: (
       caller: Invocation,
-      input: BotAppProposalInput,
+      input: BotAppProposalInput | SocialProposal,
     ) => Effect.Effect<{ readonly revision: string; readonly title: string }, AppError>;
     readonly review: (input: BotAppReviewInput) => Effect.Effect<void, AppError>;
   }
@@ -61,12 +64,94 @@ const make = Effect.gen(function* () {
     { accountId, snapshot }: StoredApp,
     use: Effect.Effect<A, AppError>,
   ) {
-    const { app, input } = sourceAction(snapshot.definition.source);
+    const action =
+      "kind" in snapshot
+        ? snapshot.definition.source.kind === "local"
+          ? null
+          : postizSourceAction(snapshot.definition.source)
+        : sourceAction(snapshot.definition.source);
+    if (action === null) return yield* use;
+    const { app, input } = action;
     return yield* tools.withConnectedBotReadAccess(caller, app, [input], (currentAccountId) =>
       currentAccountId === accountId
         ? use
         : Effect.fail(new BotAppError({ code: "source-unavailable" })),
     );
+  });
+
+  const captureSearchReport = Effect.fn("BotApps.captureSearchReport")(function* (
+    caller: Invocation,
+    definition: Omit<BotAppProposalInput, "replacesRevision">,
+    previous: StoredApp | null,
+  ) {
+    const { app, input } = sourceAction(definition.source);
+    const read = yield* tools.readConnectedBotAction(caller, app, input);
+    const metrics = yield* readMetrics(read.data, definition.source.page);
+    const prior = previous?.snapshot;
+    return {
+      accountId: read.accountId,
+      snapshot: {
+        definition,
+        revision: yield* uuid,
+        note:
+          prior &&
+          !("kind" in prior) &&
+          previous?.accountId === read.accountId &&
+          Equal.equals(prior.definition.source, definition.source)
+            ? prior.note
+            : "",
+        report: {
+          readAt: DateTime.formatIso(yield* DateTime.now),
+          accountLabel: read.accountLabel,
+          metrics,
+        },
+      },
+    } satisfies StoredApp;
+  });
+
+  const captureSocialCalendar = Effect.fn("BotApps.captureSocialCalendar")(function* (
+    caller: Invocation,
+    { kind, ...definition }: Omit<SocialProposal, "replacesRevision">,
+    previous: StoredApp | null,
+  ) {
+    const { source, contentPackage } = definition;
+    const prior = previous?.snapshot;
+    const previousCalendar = prior && "kind" in prior ? prior : null;
+    if (
+      previousCalendar &&
+      !Equal.equals(previousCalendar.definition.contentPackage.asset, contentPackage.asset)
+    ) {
+      return yield* new BotAppError({ code: "asset-approval-changed" });
+    }
+
+    let accountId: string | null = null;
+    let report = null;
+    if (source.kind === "postiz") {
+      const { app, input } = postizSourceAction(source);
+      const read = yield* tools.readConnectedBotAction(caller, app, input);
+      const destinations = yield* readPostizDestinations(read.data, contentPackage.posts);
+      accountId = read.accountId;
+      report = {
+        readAt: DateTime.formatIso(yield* DateTime.now),
+        accountLabel: read.accountLabel,
+        destinations,
+      };
+    }
+
+    const captionNotes =
+      previousCalendar && previous?.accountId === accountId
+        ? previousCalendar.captionNotes.filter(({ channel }) => {
+            const post = contentPackage.posts.find((post) => post.channel === channel);
+            const previousPost = previousCalendar.definition.contentPackage.posts.find(
+              (post) => post.channel === channel,
+            );
+            return post && Equal.equals(post.destination, previousPost?.destination);
+          })
+        : [];
+    return {
+      accountId,
+      snapshot: { kind, definition, revision: yield* uuid, note: "", captionNotes, report },
+    } satisfies StoredApp;
   });
 
   const slot = Effect.fn("BotApps.slot")(function* (target: BotAppTarget, json: string | null) {
@@ -109,24 +194,9 @@ const make = Effect.gen(function* () {
         return yield* new BotAppError({ code: "proposal-changed" });
       }
 
-      const { app, input } = sourceAction(definition.source);
-      const read = yield* tools.readConnectedBotAction(caller, app, input);
-      const metrics = yield* readMetrics(read.data, definition.source.page);
-      const revision = yield* uuid;
-      const readAt = DateTime.formatIso(yield* DateTime.now);
-      const stored = {
-        accountId: read.accountId,
-        snapshot: {
-          definition,
-          revision,
-          note:
-            previous?.accountId === read.accountId &&
-            Equal.equals(previous.snapshot.definition.source, definition.source)
-              ? previous.snapshot.note
-              : "",
-          report: { readAt, accountLabel: read.accountLabel, metrics },
-        },
-      } satisfies StoredApp;
+      const stored = yield* "kind" in definition
+        ? captureSocialCalendar(caller, definition, previous)
+        : captureSearchReport(caller, definition, previous);
       const json = yield* encode(stored).pipe(Effect.mapError(storageError));
       yield* withSourceAccess(
         caller,
@@ -149,7 +219,7 @@ const make = Effect.gen(function* () {
           if (!written.length) return yield* new BotAppError({ code: "proposal-changed" });
         }),
       );
-      return { revision, title: definition.title };
+      return { revision: stored.snapshot.revision, title: definition.title };
     }),
     review: Effect.fn("BotApps.review")(function* (input) {
       yield* tools.confirmBotChat(input);
@@ -175,13 +245,29 @@ const make = Effect.gen(function* () {
         return yield* new BotAppError({ code: "proposal-changed" });
       }
       const update = Effect.gen(function* () {
-        const nextProposal =
-          decision.kind === "annotate"
-            ? yield* encode({
-                ...stored,
-                snapshot: { ...stored.snapshot, note: decision.note.trim(), revision: yield* uuid },
-              }).pipe(Effect.mapError(storageError))
-            : null;
+        const { snapshot } = stored;
+        let nextProposal: string | null = null;
+        if (decision.kind === "annotate") {
+          nextProposal = yield* encode({
+            ...stored,
+            snapshot: { ...snapshot, note: decision.note.trim(), revision: yield* uuid },
+          }).pipe(Effect.mapError(storageError));
+        }
+        if (decision.kind === "annotate-caption") {
+          const { channel, note } = decision;
+          if (
+            !("kind" in snapshot) ||
+            !snapshot.definition.contentPackage.posts.some((post) => post.channel === channel)
+          ) {
+            return yield* new BotAppError({ code: "caption-unavailable" });
+          }
+          const captionNotes = snapshot.captionNotes.filter((item) => item.channel !== channel);
+          if (note.trim()) captionNotes.push({ channel, note: note.trim() });
+          nextProposal = yield* encode({
+            ...stored,
+            snapshot: { ...snapshot, captionNotes, revision: yield* uuid },
+          }).pipe(Effect.mapError(storageError));
+        }
         const written = yield* sql`UPDATE bot_apps SET
           proposal_json = ${nextProposal},
           saved_json = CASE WHEN ${decision.kind} = 'approve' THEN ${proposal} ELSE saved_json END

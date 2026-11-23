@@ -11,6 +11,12 @@ import {
   gmailFixtureKey,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import {
+  postizAction,
+  postizApp,
+  postizChannels,
+  socialProposal,
+} from "../../../../scripts/scenarios/fixtures/social-calendar-data.ts";
+import {
   searchAction,
   searchApp,
   websiteReport,
@@ -102,6 +108,7 @@ export const makeComposioFixture = () => {
     tool(unknownEffect, "Unclassified operation", [], true, {}),
     ...gmailActions,
     searchAction,
+    postizAction,
   ];
   const apps = [
     {
@@ -115,6 +122,7 @@ export const makeComposioFixture = () => {
     { slug: "config", name: "Needs configuration", no_auth: false },
     gmailApp,
     searchApp,
+    postizApp,
   ];
   let sequence = 0;
   let nextWriteFailure: { readonly slug: string; readonly status: number } | undefined;
@@ -276,6 +284,13 @@ export const makeComposioFixture = () => {
           const { status } = nextWriteFailure;
           nextWriteFailure = undefined;
           return response({ error: "fixture write error" }, status);
+        }
+        if (input.tool_slug === postizAction.slug) {
+          expect(input.arguments).toEqual({ group: socialProposal.source.group });
+          return response({
+            result_type: "completed",
+            data: { successful: true, data: { structuredContent: postizChannels } },
+          });
         }
         return response({
           result_type: "completed",

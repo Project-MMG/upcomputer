@@ -1,6 +1,7 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   BotAppProposalInput,
+  SocialCalendarProposalInput,
   type BotAppError,
   type ProjectToolError,
 } from "@t3tools/tasks-contracts/v1";
@@ -46,6 +47,17 @@ const toolkit = Toolkit.make(
     .annotate(McpSchema.EnabledWhen, inThread)
     .addDependency(McpInvocationContext)
     .addDependency(ThreadManagementService),
+  Tool.make("bot_app_propose_social_calendar", {
+    description:
+      "Propose a Social calendar for this bot. Use the project’s content plan, brand voice, and one approved asset with its approval source and timestamp. Supply one caption, destination, and proposed UTC publish time for each selected channel. Use Postiz integration IDs from the bot’s assigned read, or label local destinations when unavailable. This saves a package for review. To revise captions, read the pending proposal and supply its current revision as replacesRevision.",
+    parameters: SocialCalendarProposalInput,
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
 );
 
 const result = (effect: Effect.Effect<Schema.Json, BotAppError | ProjectToolError>) =>
@@ -72,6 +84,11 @@ const handlers = McpToolAccess.toLayer(
       ),
       bot_app_propose: McpToolAccess.actsAsCaller((input) =>
         Effect.flatMap(McpInvocationContext, (caller) => result(apps.propose(caller, input))),
+      ),
+      bot_app_propose_social_calendar: McpToolAccess.actsAsCaller((input) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(apps.propose(caller, { ...input, kind: "social-calendar" })),
+        ),
       ),
     };
   }),

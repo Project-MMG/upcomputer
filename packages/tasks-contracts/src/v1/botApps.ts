@@ -65,7 +65,7 @@ export const BotAppProposalInput = Schema.Struct({
 });
 export type BotAppProposalInput = typeof BotAppProposalInput.Type;
 
-export const BotAppSnapshot = Schema.Struct({
+const searchConsoleSnapshot = Schema.Struct({
   definition: BotAppDefinition,
   revision,
   note,
@@ -77,6 +77,89 @@ export const BotAppSnapshot = Schema.Struct({
     ),
   }),
 });
+
+export const SOCIAL_CALENDAR_CHANNELS = ["facebook", "instagram", "tiktok", "youtube"] as const;
+const socialChannel = Schema.Literals(SOCIAL_CALENDAR_CHANNELS);
+export type SocialCalendarChannel = typeof socialChannel.Type;
+
+const isScheduleDate = Schema.is(TaskScheduleDate);
+const utcDateTime = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{3})?Z$/),
+  Schema.makeFilter(
+    (value) => isScheduleDate(value.slice(0, 10)) || "Expected a UTC calendar date",
+  ),
+);
+const destinationId = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const socialSource = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("local") }),
+  Schema.Struct({ kind: Schema.Literal("postiz"), group: Schema.optionalKey(destinationId) }),
+]);
+export type SocialCalendarSource = typeof socialSource.Type;
+
+const socialPost = Schema.Struct({
+  channel: socialChannel,
+  destination: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("local"), label: destinationId }),
+    Schema.Struct({ kind: Schema.Literal("postiz"), integrationId: destinationId }),
+  ]),
+  publishAt: utcDateTime,
+  caption: TrimmedNonEmptyString.check(Schema.isMaxLength(5000)),
+});
+export type SocialCalendarPost = typeof socialPost.Type;
+
+const socialCalendarDefinition = Schema.Struct({
+  title,
+  source: socialSource,
+  contentPackage: Schema.Struct({
+    asset: Schema.Struct({
+      title,
+      mediaUrl: httpUrl,
+      approval: Schema.Struct({ sourceUrl: httpUrl, approvedAt: utcDateTime }),
+    }),
+    posts: Schema.NonEmptyArray(socialPost).check(
+      Schema.isMaxLength(SOCIAL_CALENDAR_CHANNELS.length),
+      Schema.makeFilter(
+        (posts) =>
+          new Set(posts.map(({ channel }) => channel)).size === posts.length ||
+          "Expected one caption per channel",
+      ),
+    ),
+  }),
+});
+const matchesSocialSource = Schema.makeFilter(
+  ({ source, contentPackage }: typeof socialCalendarDefinition.Type) =>
+    (source.kind === "postiz") ===
+      contentPackage.posts.some(({ destination }) => destination.kind === "postiz") ||
+    "Expected a Postiz source for Postiz destinations",
+);
+
+export const SocialCalendarProposalInput = Schema.Struct({
+  ...socialCalendarDefinition.fields,
+  replacesRevision: Schema.optionalKey(revision),
+}).check(matchesSocialSource);
+export type SocialCalendarProposalInput = typeof SocialCalendarProposalInput.Type;
+
+const socialCalendarSnapshot = Schema.Struct({
+  kind: Schema.Literal("social-calendar"),
+  definition: socialCalendarDefinition.check(matchesSocialSource),
+  revision,
+  note,
+  captionNotes: Schema.Array(Schema.Struct({ channel: socialChannel, note })).check(
+    Schema.isMaxLength(SOCIAL_CALENDAR_CHANNELS.length),
+  ),
+  report: Schema.NullOr(
+    Schema.Struct({
+      readAt: IsoDateTime,
+      accountLabel: Schema.String.check(Schema.isMaxLength(200)),
+      destinations: Schema.NonEmptyArray(
+        Schema.Struct({ integrationId: destinationId, label: destinationId }),
+      ).check(Schema.isMaxLength(SOCIAL_CALENDAR_CHANNELS.length)),
+    }),
+  ),
+});
+export type SocialCalendarSnapshot = typeof socialCalendarSnapshot.Type;
+
+export const BotAppSnapshot = Schema.Union([searchConsoleSnapshot, socialCalendarSnapshot]);
 export type BotAppSnapshot = typeof BotAppSnapshot.Type;
 
 const appSlot = Schema.NullOr(
@@ -93,6 +176,7 @@ export const BotAppReviewInput = Schema.Struct({
   revision,
   decision: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("annotate"), note }),
+    Schema.Struct({ kind: Schema.Literal("annotate-caption"), channel: socialChannel, note }),
     Schema.Struct({ kind: Schema.Literal("approve") }),
     Schema.Struct({ kind: Schema.Literal("dismiss") }),
     Schema.Struct({ kind: Schema.Literal("remove") }),
@@ -108,6 +192,10 @@ const messages = {
     "This bot app’s source access has changed. Check its account and tool assignment.",
   "report-invalid": "Search Console returned a report that did not match the requested page.",
   "report-empty": "Search Console returned no data for this page and report window.",
+  "asset-approval-changed": "The original asset and its approval must stay with this proposal.",
+  "caption-unavailable": "This proposal does not have a caption for that channel.",
+  "postiz-response-invalid": "Postiz returned an unrecognized channel list.",
+  "postiz-destination-unavailable": "Postiz could not verify a selected channel destination.",
 } as const;
 
 export class BotAppError extends Schema.TaggedError<BotAppError>()("BotAppError", {

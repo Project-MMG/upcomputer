@@ -1683,17 +1683,23 @@ it.live("after a restart an active run's cut turn continues once, inside that ru
     "task-agent-v2-restart-active",
     ({ createTaskWith, runsOf, runWithStatus, threads, started, v2Runs }) =>
       Effect.gen(function* () {
+        const events = yield* EventSink.EventSinkV2;
+        const sequence = yield* events.latestSequence();
         const first = yield* createTaskWith(`Work until stopped. ${HOLD}`);
-        yield* eventually(
-          "the provider turn to run",
-          threads
-            .getThreadRecords(first.threadId, ["providerTurns"])
-            .pipe(
-              Effect.map(({ providerTurns }) =>
-                Option.fromNullishOr(providerTurns.find((turn) => turn.status === "running")),
-              ),
+        const providerStarted = yield* events
+          .stream({
+            threadId: first.threadId,
+            afterSequence: sequence,
+            eventType: "provider-turn.updated",
+          })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "provider-turn.updated" && event.payload.status === "running",
             ),
-        );
+            Stream.runHead,
+          );
+        assert.isTrue(Option.isSome(providerStarted));
 
         yield* recoverAfterRestart;
         yield* eventually("the run to complete", runWithStatus(first.id, "completed"));

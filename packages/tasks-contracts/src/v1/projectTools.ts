@@ -172,6 +172,8 @@ const messages = {
   "workspace-annotation-required": "Use the annotation from the current Gmail workspace turn.",
   "workspace-annotation-send-failed": "Up.computer could not send this note to the bot.",
   "workspace-approval-required": "Approve a reply in the Gmail workspace to send it.",
+  "social-approval-required":
+    "Approve the fixture post in the saved Social calendar to schedule it.",
   "storage-unavailable": "Up.computer could not load or save this project's tools.",
   "credentials-unavailable": "Up.computer could not read this environment's Composio key.",
   "composio-unavailable": "Up.computer could not reach Composio or read its response.",

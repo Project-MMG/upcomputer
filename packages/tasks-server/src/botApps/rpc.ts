@@ -28,13 +28,13 @@ export const BOT_APPS_RPC_CONTRIBUTION = defineNamespacedRpcContribution({
     [M.state]: AuthOrchestrationReadScope,
     [M.review]: AuthOrchestrationOperateScope,
   },
-  handlers: () =>
+  handlers: ({ currentSessionId }) =>
     BotAppsRpcGroup.toLayer(
       BotAppsRpcGroup.of({
         [M.state]: (input) =>
           Effect.flatMap(BotApps.BotApps, (apps) => response(apps.state(input))),
         [M.review]: (input) =>
-          Effect.flatMap(BotApps.BotApps, (apps) => response(apps.review(input))),
+          Effect.flatMap(BotApps.BotApps, (apps) => response(apps.review(input, currentSessionId))),
       }),
     ),
 });

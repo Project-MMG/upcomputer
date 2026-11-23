@@ -20,6 +20,26 @@ export const postizAction = {
   },
 };
 
+export const postizScheduleFixture = {
+  slug: "POSTIZ_MCP_SCHEDULE_POST_FIXTURE",
+  name: "Schedule Post (Fixture)",
+  toolkit: postizAction.toolkit,
+  tags: ["createHint"],
+  no_auth: false,
+  input_parameters: {
+    type: "object",
+    properties: {
+      group: { type: "string" },
+      integration_id: { type: "string" },
+      publish_at: { type: "string" },
+      caption: { type: "string" },
+      media_url: { type: "string" },
+    },
+    required: ["integration_id", "publish_at", "caption", "media_url"],
+    additionalProperties: false,
+  },
+};
+
 export const socialProposal = {
   title: "Workshop social calendar",
   source: { kind: "postiz", group: "workshop" },

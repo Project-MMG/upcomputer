@@ -290,9 +290,32 @@ export const BotAppSnapshot = Schema.Union([
 ]);
 export type BotAppSnapshot = typeof BotAppSnapshot.Type;
 
+const socialSchedule = Schema.Struct({
+  channel: socialChannel,
+  delivery: Schema.Union([
+    Schema.Struct({ status: Schema.Literal("ready") }),
+    Schema.Struct({
+      status: Schema.Literal("scheduled"),
+      receiptId: destinationId,
+      matchesPost: Schema.Boolean,
+    }),
+    Schema.Struct({
+      status: Schema.Literals(["failed", "uncertain"]),
+      matchesPost: Schema.Boolean,
+    }),
+  ]),
+});
+export type SocialSchedule = typeof socialSchedule.Type;
+
 const appSlot = Schema.NullOr(
   Schema.Union([
-    Schema.Struct({ status: Schema.Literal("available"), snapshot: BotAppSnapshot }),
+    Schema.Struct({
+      status: Schema.Literal("available"),
+      snapshot: BotAppSnapshot,
+      socialSchedule: Schema.optionalKey(
+        Schema.Array(socialSchedule).check(Schema.isMaxLength(SOCIAL_CALENDAR_CHANNELS.length)),
+      ),
+    }),
     Schema.Struct({ status: Schema.Literal("unavailable"), revision }),
   ]),
 );
@@ -305,6 +328,7 @@ export const BotAppReviewInput = Schema.Struct({
   decision: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("annotate"), note }),
     Schema.Struct({ kind: Schema.Literal("annotate-caption"), channel: socialChannel, note }),
+    Schema.Struct({ kind: Schema.Literal("schedule-social-fixture"), channel: socialChannel }),
     Schema.Struct({ kind: Schema.Literal("approve") }),
     Schema.Struct({
       kind: Schema.Literal("approve-outbound"),
@@ -331,6 +355,9 @@ const messages = {
   "report-empty": "Search Console returned no data for this page and report window.",
   "asset-approval-changed": "The original asset and its approval must stay with this proposal.",
   "caption-unavailable": "This proposal does not have a caption for that channel.",
+  "social-schedule-unavailable": "Choose a verified Postiz destination in the saved calendar.",
+  "social-schedule-already-attempted":
+    "A previous version already has a delivery record for this destination and time.",
   "lifecycle-report-invalid": "Klaviyo did not return a complete lifecycle report.",
   "lifecycle-source-mismatch": "Klaviyo returned a different account, record, or segment.",
   "lifecycle-report-empty": "Klaviyo returned no email performance for this report window.",

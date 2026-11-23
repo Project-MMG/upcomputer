@@ -163,6 +163,12 @@ channel, open the original asset approval, and add a note to the caption you wan
 bot to revise. Choose **Save calendar** after reviewing the package. The entries
 remain publishing proposals. To discard the calendar, choose **Remove saved app**.
 
+In a fixture workspace with the **Schedule Post (Fixture)** action assigned to the bot,
+open a saved calendar and choose **Review fixture schedule** on a verified post. Check
+the account, destination, UTC time, caption, and media before approving. The saved
+calendar shows the fixture receipt. If delivery is uncertain, check the fixture
+provider for the same destination and time before scheduling again.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

@@ -20,6 +20,7 @@ import {
   TaskPromptSettingsStoreLive,
   TaskRepositoryLive,
 } from "./persistence/index.ts";
+import { SOCIAL_SCHEDULE_MIGRATION_CONTRIBUTION } from "./persistence/migrations/socialSchedule.ts";
 import { retryOperational } from "./retryOperational.ts";
 import { TASK_RPC_CONTRIBUTIONS } from "./rpc/contributions.ts";
 import { TaskReminderSweeperLive } from "./schedule/TaskReminderSweeper.ts";
@@ -73,7 +74,7 @@ const TaskRecoveryLive = Layer.effectDiscard(
 export const TASKS_SERVER_FEATURE = defineExperimentalServerFeature({
   id: TASKS_FEATURE_ID,
   version: 1,
-  migrations: [TASK_MIGRATION_CONTRIBUTION],
+  migrations: [TASK_MIGRATION_CONTRIBUTION, SOCIAL_SCHEDULE_MIGRATION_CONTRIBUTION],
   layers: [
     {
       id: "tasks-services",

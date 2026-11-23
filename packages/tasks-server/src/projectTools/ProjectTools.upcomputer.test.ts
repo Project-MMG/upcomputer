@@ -100,6 +100,7 @@ import {
 import {
   postizAction,
   postizApp,
+  postizScheduleFixture,
   socialProposal,
 } from "../../../../scripts/scenarios/fixtures/social-calendar-data.ts";
 import {
@@ -1637,7 +1638,7 @@ it.effect("reviews Social captions for the scoped destinations and keeps the ass
     ]);
     const state = operator[BOT_APPS_RPC_METHODS.state];
     const review = operator[BOT_APPS_RPC_METHODS.review];
-    expect(yield* state(target)).toEqual({ proposal: null, saved: null });
+    expect(yield* state(target)).toEqual(expect.objectContaining({ proposal: null, saved: null }));
     expect(yield* Effect.flip(state({ ...target, projectId: secondProject }))).toMatchObject({
       code: "not-a-bot",
     });
@@ -1735,7 +1736,9 @@ it.effect("reviews Social captions for the scoped destinations and keeps the ass
       ),
     ).toMatchObject({ code: "not-assigned" });
     yield* tools.grant(grant);
-    expect(yield* state(target)).toEqual({ saved: original, proposal: revised });
+    expect(yield* state(target)).toEqual(
+      expect.objectContaining({ saved: original, proposal: revised }),
+    );
     expect(backend.calls).toHaveLength(4);
     for (const call of backend.calls) {
       expect(call).toEqual({
@@ -1767,6 +1770,217 @@ it.effect("reviews Social captions for the scoped destinations and keeps the ass
       snapshot: { report: null, definition: { source: { kind: "local" } } },
     });
     expect(backend.calls).toHaveLength(4);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("delivers exact Social fixture approvals once and retains uncertain attempts", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const sql = yield* SqlClient.SqlClient;
+    const { backend, authenticate, enableComposio } = yield* Fixture;
+    enableComposio();
+    const social = yield* addBot("Social", firstProject);
+    const other = yield* addBot("Other", firstProject);
+    const target = { threadId: social.threadId, botId: social.agent.id, projectId: firstProject };
+    const api = yield* authenticate(social.threadId);
+    const otherApi = yield* authenticate(other.threadId);
+    const connection = { projectId: firstProject, app: postizApp.slug };
+    yield* tools.connection({ ...connection, operation: "start" });
+    const account = Array.from(backend.accounts.values())[0]!;
+    account.status = "ACTIVE";
+    account.label = "Workshop Postiz";
+    yield* tools.connection({ ...connection, operation: "finish" });
+    const assigned = {
+      projectId: firstProject,
+      fixedInputs: { group: socialProposal.source.group },
+      audience: { kind: "selected", botIds: [social.agent.id] } as const,
+    };
+    const readGrant = { ...assigned, slug: postizAction.slug };
+    const writeGrant = { ...assigned, slug: postizScheduleFixture.slug };
+    yield* tools.grant(readGrant);
+    yield* tools.grantApp({ ...connection, audience: assigned.audience });
+    expect(code(yield* otherApi.proposeCalendar(socialProposal))).toBe("not-assigned");
+
+    const operator = yield* botAppsClient([
+      AuthOrchestrationReadScope,
+      AuthOrchestrationOperateScope,
+    ]);
+    const readOnly = yield* botAppsClient([AuthOrchestrationReadScope]);
+    const state = operator[BOT_APPS_RPC_METHODS.state];
+    const review = operator[BOT_APPS_RPC_METHODS.review];
+    const writes = () => backend.calls.filter(({ slug }) => slug === postizScheduleFixture.slug);
+    const propose = Effect.fn("SocialFixtureTest.propose")(function* (
+      input: Schema.JsonObject = socialProposal,
+    ) {
+      content(yield* api.proposeCalendar(input));
+      const proposal = (yield* state(target)).proposal;
+      if (proposal?.status !== "available") throw new Error("Expected a Social proposal");
+      return proposal.snapshot.revision;
+    });
+    const save = (revision: string) =>
+      review({ ...target, revision, decision: { kind: "approve" } });
+    const delivery = {
+      ...target,
+      revision: yield* propose(),
+      decision: { kind: "schedule-social-fixture", channel: "instagram" } as const,
+    };
+    expect(yield* Effect.flip(review(delivery))).toMatchObject({ code: "saved-app-changed" });
+    yield* save(delivery.revision);
+    expect(yield* Effect.flip(review(delivery))).toMatchObject({ code: "not-assigned" });
+    expect(writes()).toHaveLength(0);
+
+    yield* tools.grant(writeGrant);
+    expect(content(yield* api.search({ query: postizScheduleFixture.slug }))).toMatchObject({
+      actions: [],
+    });
+    expect(
+      content(yield* api.search({ app: postizApp.slug, query: postizScheduleFixture.slug })),
+    ).toMatchObject({ actions: [] });
+    expect(content(yield* api.read(postizAction.slug))).toMatchObject({ successful: true });
+    expect(code(yield* api.write(postizScheduleFixture.slug))).toBe("social-approval-required");
+    expect(code(yield* otherApi.write(postizScheduleFixture.slug))).toBe(
+      "social-approval-required",
+    );
+    expect(yield* Effect.flip(readOnly[BOT_APPS_RPC_METHODS.review](delivery))).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+    });
+    expect(yield* Effect.flip(review({ ...delivery, projectId: secondProject }))).toMatchObject({
+      code: "not-a-bot",
+    });
+    expect(
+      yield* Effect.flip(
+        review({ ...delivery, decision: { ...delivery.decision, channel: "tiktok" } }),
+      ),
+    ).toMatchObject({ code: "social-schedule-unavailable" });
+    expect(writes()).toHaveLength(0);
+
+    const { asset, posts } = socialProposal.contentPackage;
+    const [facebook, instagram, ...rest] = posts;
+    const caption = "Start with a dry fit.";
+    const draftGate = yield* backend.holdSession(postizScheduleFixture.slug);
+    const oldApproval = yield* Effect.forkChild(Effect.flip(review(delivery)));
+    yield* Deferred.await(draftGate.entered);
+    const revised = yield* propose({
+      ...socialProposal,
+      contentPackage: { asset, posts: [facebook, { ...instagram, caption }, ...rest] },
+    });
+    yield* Deferred.succeed(draftGate.proceed, undefined);
+    expect(yield* Fiber.join(oldApproval)).toMatchObject({ code: "saved-app-changed" });
+    expect((yield* state(target)).saved).not.toHaveProperty("socialSchedule");
+    expect(yield* Effect.flip(review(delivery))).toMatchObject({ code: "saved-app-changed" });
+    yield* save(revised);
+    expect(yield* Effect.flip(review(delivery))).toMatchObject({ code: "saved-app-changed" });
+    const approved = { ...delivery, revision: revised };
+    const gate = yield* backend.holdSession(postizScheduleFixture.slug);
+    const approval = yield* Effect.forkChild(Effect.flip(review(approved)));
+    yield* Deferred.await(gate.entered);
+    yield* tools.grant({ ...writeGrant, audience: null });
+    yield* Deferred.succeed(gate.proceed, undefined);
+    expect(yield* Fiber.join(approval)).toMatchObject({ code: "not-assigned" });
+    expect(writes()).toHaveLength(0);
+    yield* tools.grant({ ...writeGrant, fixedInputs: { group: "other-group" } });
+    expect(yield* Effect.flip(review(approved))).toMatchObject({
+      code: "workspace-input-conflict",
+    });
+    yield* tools.grant(writeGrant);
+
+    yield* Effect.all([review(approved), review(approved)], { concurrency: 2 });
+    expect(writes()).toEqual([
+      {
+        slug: postizScheduleFixture.slug,
+        account: account.id,
+        userId: account.user_id,
+        arguments: {
+          group: socialProposal.source.group,
+          integration_id: instagram.destination.integrationId,
+          publish_at: instagram.publishAt,
+          caption,
+          media_url: asset.mediaUrl,
+        },
+      },
+    ]);
+    expect((yield* state(target)).saved).toMatchObject({
+      socialSchedule: expect.arrayContaining([
+        {
+          channel: "instagram",
+          delivery: { status: "scheduled", receiptId: "fixture-post-receipt", matchesPost: true },
+        },
+      ]),
+    });
+
+    const uncertain = {
+      ...approved,
+      decision: { ...approved.decision, channel: "facebook" as const },
+    };
+    backend.failWrite(postizScheduleFixture.slug, 502);
+    yield* review(uncertain);
+    yield* review(uncertain);
+    expect(writes()).toHaveLength(2);
+    const edited = yield* propose({
+      ...socialProposal,
+      contentPackage: {
+        asset,
+        posts: [
+          {
+            ...facebook,
+            caption: "A different caption",
+            publishAt: facebook.publishAt.replace("Z", ".000Z"),
+          },
+        ],
+      },
+    });
+    yield* save(edited);
+    expect(yield* Effect.flip(review({ ...uncertain, revision: edited }))).toMatchObject({
+      code: "social-schedule-already-attempted",
+    });
+    expect(writes()).toHaveLength(2);
+    expect((yield* state(target)).saved).toMatchObject({
+      socialSchedule: [
+        { channel: "facebook", delivery: { status: "uncertain", matchesPost: false } },
+      ],
+    });
+    expect(
+      yield* sql`SELECT status, provider_receipt_id FROM social_schedule_attempts ORDER BY status`,
+    ).toEqual([
+      { status: "scheduled", provider_receipt_id: "fixture-post-receipt" },
+      { status: "uncertain", provider_receipt_id: null },
+    ]);
+
+    const newRevision = yield* propose(socialProposal);
+    yield* save(newRevision);
+    const newApproval = {
+      ...approved,
+      revision: newRevision,
+      decision: { ...approved.decision, channel: "youtube" as const },
+    };
+    backend.failWrite(postizScheduleFixture.slug, 403);
+    yield* review(newApproval);
+    yield* review(newApproval);
+    expect((yield* state(target)).saved).toMatchObject({
+      socialSchedule: expect.arrayContaining([
+        { channel: "youtube", delivery: { status: "failed", matchesPost: true } },
+      ]),
+    });
+    expect(writes()).toHaveLength(3);
+    const retryRevision = yield* propose(socialProposal);
+    yield* save(retryRevision);
+    expect((yield* state(target)).saved).toMatchObject({
+      socialSchedule: expect.arrayContaining([
+        { channel: "youtube", delivery: { status: "ready" } },
+      ]),
+    });
+    const retry = { ...newApproval, revision: retryRevision };
+    account.status = "EXPIRED";
+    expect(yield* Effect.flip(review(retry))).toMatchObject({ code: "account-unavailable" });
+    yield* tools.connection({ ...connection, operation: "disconnect" });
+    yield* tools.connection({ ...connection, operation: "start" });
+    const replacement = Array.from(backend.accounts.values()).at(-1)!;
+    replacement.status = "ACTIVE";
+    replacement.label = account.label;
+    yield* tools.connection({ ...connection, operation: "finish" });
+    expect(yield* Effect.flip(review(retry))).toMatchObject({ code: "account-unavailable" });
+    expect((yield* state(target)).saved?.status).toBe("unavailable");
+    expect(writes()).toHaveLength(3);
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -1916,7 +2130,7 @@ it.effect("saves a review-only budget proposal backed by both scoped ads account
     expect(code(yield* caller.proposePaidMedia(paidMediaProposal))).toBe(
       "paid-media-budget-unavailable",
     );
-    expect(yield* state(target)).toEqual({ saved: null, proposal: null });
+    expect(yield* state(target)).toEqual(expect.objectContaining({ saved: null, proposal: null }));
     backend.setPaidMediaReport(undefined);
     const beforeRead = backend.calls.length;
     expect(content(yield* caller.proposePaidMedia(paidMediaProposal))).toMatchObject({
@@ -2006,7 +2220,9 @@ it.effect("saves a review-only budget proposal backed by both scoped ads account
 
     yield* tools.grant(creativeGrant);
     yield* review(latest);
-    expect(yield* state(target)).toEqual({ saved: annotated, proposal: null });
+    expect(yield* state(target)).toEqual(
+      expect.objectContaining({ saved: annotated, proposal: null }),
+    );
     expect(backend.calls).toHaveLength(beforeRead + 5);
 
     backend.setPaidMediaReport({ includeMetaConversion: false });
@@ -2119,11 +2335,14 @@ it.effect(
         },
       });
       expect(content(yield* caller.shopifyCatalog())).toBeNull();
-      yield* apps.review({
-        ...target,
-        revision: proposal.snapshot.revision,
-        decision: { kind: "approve" },
-      });
+      yield* apps.review(
+        {
+          ...target,
+          revision: proposal.snapshot.revision,
+          decision: { kind: "approve" },
+        },
+        approvalSession,
+      );
       expect(yield* apps.state(target)).toMatchObject({ saved: proposal, proposal: null });
       const followUps = [
         {
@@ -2236,7 +2455,9 @@ it.effect("reviews a Klaviyo email plan under the selected bot and verified acco
     ] as const) {
       backend.setLifecycleReport(fixture);
       expect(code(yield* caller.proposeLifecycle(lifecycleProposal))).toBe(error);
-      expect(yield* state(target)).toEqual({ saved: null, proposal: null });
+      expect(yield* state(target)).toEqual(
+        expect.objectContaining({ saved: null, proposal: null }),
+      );
     }
 
     backend.setLifecycleReport(undefined);
@@ -2290,7 +2511,7 @@ it.effect("reviews a Klaviyo email plan under the selected bot and verified acco
     });
     expect(
       yield* state({ projectId: firstProject, botId: other.agent.id, threadId: other.threadId }),
-    ).toEqual({ saved: null, proposal: null });
+    ).toEqual(expect.objectContaining({ saved: null, proposal: null }));
     const approval = {
       ...target,
       revision: proposal.snapshot.revision,
@@ -2317,7 +2538,9 @@ it.effect("reviews a Klaviyo email plan under the selected bot and verified acco
     expect(code(yield* caller.appProposal())).toBe("not-assigned");
     yield* tools.grant(reportGrant);
     yield* review(latest);
-    expect(yield* state(target)).toEqual({ saved: annotated, proposal: null });
+    expect(yield* state(target)).toEqual(
+      expect.objectContaining({ saved: annotated, proposal: null }),
+    );
     expect(backend.calls).toHaveLength(firstRead + calls.length);
 
     yield* tools.grant(grant(klaviyoGetFlow.slug));
@@ -2450,7 +2673,7 @@ it.effect("saves decisions on manual opportunities and releases only the scoped 
         }),
       ),
     ).toMatchObject({ _tag: "Failure", failure: { code: "outbound-decisions-pending" } });
-    expect(yield* state(target)).toEqual({ saved: null, proposal: draft });
+    expect(yield* state(target)).toEqual(expect.objectContaining({ saved: null, proposal: draft }));
     expect(
       yield* Effect.flip(
         review({

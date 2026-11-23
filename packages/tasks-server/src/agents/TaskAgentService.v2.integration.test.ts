@@ -32,6 +32,7 @@ import {
   BOT_WORK_RPC_METHODS,
   BotsRpcGroup,
   type BotRetroProposeInput,
+  type BotSetupProposalInput,
   BotWorkRpcGroup,
   BotWriteInput,
   defaultBotAppearance,
@@ -2842,7 +2843,7 @@ it.live(
             ],
           },
         };
-        const propose = (input: typeof proposal) =>
+        const propose = (input: BotSetupProposalInput) =>
           callTaskTool(chief.threadId, "bot_setup_propose", input);
         const badFolder = yield* propose({
           ...proposal,
@@ -2858,8 +2859,19 @@ it.live(
           revision: discard.revision,
           decision: { kind: "reject" },
         });
+        assert.deepEqual((yield* reader[BOT_WORK_RPC_METHODS.state](target)).proposals, []);
         const rejectedAgain = yield* propose({ ...proposal, roleKey: "discard-this" });
         assert.equal(JSON.parse(rejectedAgain.text).state.status, "rejected");
+        const replacement = yield* propose({
+          ...proposal,
+          roleKey: discard.roleKey,
+          replacesRejectedRevision: discard.revision,
+        });
+        assert.isFalse(replacement.isError, replacement.text);
+        const replacementRow = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).proposals[0]!;
+        assert.equal(replacementRow.roleKey, discard.roleKey);
+        assert.equal(replacementRow.state.status, "pending");
+        assert.notEqual(replacementRow.revision, discard.revision);
 
         const first = yield* propose(proposal);
         assert.isFalse(first.isError, first.text);

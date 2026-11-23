@@ -165,6 +165,7 @@ const make = Effect.gen(function* () {
         app.view === "team"
           ? yield* sql<{ json: string }>`SELECT proposal_json AS json FROM bot_setup_proposals
             WHERE project_id = ${target.projectId} AND coordinator_id = ${target.botId}
+              AND json_extract(proposal_json, '$.state.status') <> 'rejected'
             ORDER BY json_extract(proposal_json, '$.state.status') IN ('applying', 'pending') DESC,
               updated_at DESC, role_key LIMIT 8`.pipe(
               Effect.flatMap((rows) => Effect.forEach(rows, ({ json }) => decodeProposal(json))),

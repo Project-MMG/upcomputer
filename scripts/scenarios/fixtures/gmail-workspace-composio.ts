@@ -7,6 +7,7 @@ import {
   gmailApp,
   gmailFixtureDeliveryFile,
   gmailFixtureKey,
+  gmailFixtureRejectionFile,
   gmailFixtureSender,
   gmailFixtureSendLog,
   gmailReplyAction,
@@ -104,6 +105,7 @@ globalThis.fetch = async (input, init) => {
       call.tool_slug,
       call.arguments.thread_id,
       !!home && NodeFS.existsSync(NodePath.join(home, gmailFixtureDeliveryFile)),
+      !!home && NodeFS.existsSync(NodePath.join(home, gmailFixtureRejectionFile)),
     );
     if (data && call.tool_slug === gmailReplyAction) {
       if (!home) return json({ result_type: "failed" });

@@ -5,6 +5,7 @@ import {
   type Bot,
   type BotAppReviewInput,
   type BotAppSnapshot,
+  type SocialCalendarSnapshot,
 } from "@t3tools/tasks-contracts/v1";
 import { useGT } from "gt-react";
 import { useState } from "react";
@@ -23,11 +24,16 @@ import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/ex
 import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useBots } from "../bots/botData.tsx";
 import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
+import { SocialCalendar, type SocialCalendarFilters } from "./SocialCalendar.tsx";
 import { useBotAppState } from "./useBotAppState.ts";
 
 type Review = (revision: string, decision: BotAppReviewInput["decision"]) => void;
 
-function Report({ snapshot }: { readonly snapshot: BotAppSnapshot }) {
+function Report({
+  snapshot,
+}: {
+  readonly snapshot: Exclude<BotAppSnapshot, SocialCalendarSnapshot>;
+}) {
   const gt = useGT();
   const {
     definition: { source, proposedFix },
@@ -180,7 +186,7 @@ function RemoveSavedApp({
           <AlertDialogHeader>
             <AlertDialogTitle>{gt("Remove saved app?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {gt("This removes the approved report and its review note.")}
+              {gt("This removes the saved app and its review notes.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -209,6 +215,12 @@ function BotApp({
   const canReview = useExperimentalFeatureRpcPermission(environmentId, BOT_APPS_RPC_METHODS.review);
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string>();
+  const [showSavedFor, setShowSavedFor] = useState<string>();
+  const [filters, setFilters] = useState<SocialCalendarFilters>({
+    channel: "all",
+    from: "",
+    to: "",
+  });
   const review: Review = (revision, decision) => {
     setReviewing(true);
     setError(undefined);
@@ -224,6 +236,14 @@ function BotApp({
   };
   const disabled = !canReview || reviewing;
   const { saved, proposal } = state.data ?? {};
+  const compareRevision =
+    proposal?.status === "available" &&
+    "kind" in proposal.snapshot &&
+    saved?.status === "available" &&
+    "kind" in saved.snapshot
+      ? proposal.snapshot.revision
+      : undefined;
+  const showSaved = compareRevision !== undefined && showSavedFor === compareRevision;
   return (
     <div className="grid gap-5">
       {error || state.error ? (
@@ -243,7 +263,27 @@ function BotApp({
         </div>
       ) : (
         <>
-          {proposal?.status === "available" ? (
+          {compareRevision ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant={showSaved ? "outline" : "secondary"}
+                aria-pressed={!showSaved}
+                onClick={() => setShowSavedFor(undefined)}
+              >
+                {gt("Review draft")}
+              </Button>
+              <Button
+                size="sm"
+                variant={showSaved ? "secondary" : "outline"}
+                aria-pressed={showSaved}
+                onClick={() => setShowSavedFor(compareRevision)}
+              >
+                {gt("Saved calendar")}
+              </Button>
+            </div>
+          ) : null}
+          {!showSaved && proposal?.status === "available" ? (
             <section className="grid gap-3" aria-label={gt("App proposal")}>
               <div className="grid gap-1">
                 <p className="text-xs font-medium text-muted-foreground">{gt("App proposal")}</p>
@@ -251,13 +291,27 @@ function BotApp({
                   {proposal.snapshot.definition.title}
                 </h3>
               </div>
-              <Report snapshot={proposal.snapshot} />
-              <ProposalReview
-                key={proposal.snapshot.revision}
-                snapshot={proposal.snapshot}
-                disabled={disabled}
-                review={review}
-              />
+              {"kind" in proposal.snapshot ? (
+                <SocialCalendar
+                  snapshot={proposal.snapshot}
+                  filters={filters}
+                  setFilters={setFilters}
+                  review={{
+                    disabled,
+                    send: (decision) => review(proposal.snapshot.revision, decision),
+                  }}
+                />
+              ) : (
+                <>
+                  <Report snapshot={proposal.snapshot} />
+                  <ProposalReview
+                    key={proposal.snapshot.revision}
+                    snapshot={proposal.snapshot}
+                    disabled={disabled}
+                    review={review}
+                  />
+                </>
+              )}
             </section>
           ) : proposal?.status === "unavailable" ? (
             <section className="grid gap-2">
@@ -276,7 +330,7 @@ function BotApp({
               </div>
             </section>
           ) : null}
-          {saved?.status === "available" ? (
+          {saved?.status === "available" && (!compareRevision || showSaved) ? (
             <section className="grid gap-3" aria-label={gt("Saved app")}>
               <div className="grid gap-1">
                 <p className="text-xs font-medium text-muted-foreground">{gt("Saved app")}</p>
@@ -284,7 +338,15 @@ function BotApp({
                   {saved.snapshot.definition.title}
                 </h3>
               </div>
-              <Report snapshot={saved.snapshot} />
+              {"kind" in saved.snapshot ? (
+                <SocialCalendar
+                  snapshot={saved.snapshot}
+                  filters={filters}
+                  setFilters={setFilters}
+                />
+              ) : (
+                <Report snapshot={saved.snapshot} />
+              )}
               {saved.snapshot.note ? (
                 <div className="grid gap-1 text-sm">
                   <h4 className="font-medium">{gt("Review note")}</h4>
@@ -318,7 +380,7 @@ function BotApp({
             </div>
           ) : (
             <p role="status" className="text-sm text-muted-foreground">
-              {gt("This bot has no app proposal or saved report yet.")}
+              {gt("This bot has no app proposal or saved app yet.")}
             </p>
           )}
         </>

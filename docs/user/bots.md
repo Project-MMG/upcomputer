@@ -149,6 +149,20 @@ different account needs its own review.
 
 To discard the approved report, open the app and choose **Remove saved app**.
 
+## Review a Social calendar
+
+Ask a bot to propose a Social calendar from your content plan and one approved asset.
+The bot can prepare separate captions and publishing times for Facebook, Instagram,
+TikTok, and YouTube. To verify Postiz destinations, connect Postiz in the bot’s project
+and assign the **List Integrations** read in **Tools**. If you use a Postiz customer
+group, fix the action’s `group` input to that group. The bot can also propose a
+calendar using local destination labels.
+
+Open **Bot Apps** in the chat’s right pane or in **Bot Settings**. Filter by date and
+channel, open the original asset approval, and add a note to the caption you want the
+bot to revise. Choose **Save calendar** after reviewing the package. The entries
+remain publishing proposals. To discard the calendar, choose **Remove saved app**.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

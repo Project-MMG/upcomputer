@@ -2243,6 +2243,7 @@ it.live(
             "gmail_workspace_check",
             "gmail_workspace_record_reply",
             "gmail_workspace_apply_annotation",
+            "bot_app_propose_social_calendar",
             "bot_app_get_proposal",
             "bot_app_propose",
           ]),

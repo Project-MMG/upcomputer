@@ -11,6 +11,14 @@ import {
   gmailFixtureKey,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import {
+  googleAdsApp,
+  googleAdsSearch,
+  metaAdsApp,
+  metaAdsCreatives,
+  metaAdsInsights,
+  paidMediaActionData,
+} from "../../../../scripts/scenarios/fixtures/paid-media-data.ts";
+import {
   postizAction,
   postizApp,
   postizChannels,
@@ -115,6 +123,9 @@ export const makeComposioFixture = () => {
     shopifyRead,
     searchAction,
     postizAction,
+    googleAdsSearch,
+    metaAdsInsights,
+    metaAdsCreatives,
   ];
   const apps = [
     {
@@ -130,9 +141,12 @@ export const makeComposioFixture = () => {
     shopifyApp,
     searchApp,
     postizApp,
+    googleAdsApp,
+    metaAdsApp,
   ];
   let sequence = 0;
   let nextWriteFailure: { readonly slug: string; readonly status: number } | undefined;
+  let adsReportOptions: Parameters<typeof paidMediaActionData>[2];
   let searchReport: unknown = websiteReport;
   let shopifyReport: unknown = { successful: true, data: { data: shopifyResponse } };
   let nextSessionGate:
@@ -293,6 +307,10 @@ export const makeComposioFixture = () => {
           account,
           arguments: input.arguments,
         });
+        const adsReport = paidMediaActionData(input.tool_slug, input.arguments, adsReportOptions);
+        if (adsReport !== undefined) {
+          return response({ result_type: "completed", data: adsReport });
+        }
         if (input.tool_slug === shopifyRead.slug) {
           return response({ result_type: "completed", data: shopifyReport });
         }
@@ -329,6 +347,9 @@ export const makeComposioFixture = () => {
     accounts,
     catalogRequests,
     sessions,
+    setPaidMediaReport: (options: Parameters<typeof paidMediaActionData>[2]) => {
+      adsReportOptions = options;
+    },
     setShopifyReport: (report: unknown) => {
       shopifyReport = report;
     },

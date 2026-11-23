@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Records from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -53,6 +54,10 @@ type ActionInput = {
 };
 type ConnectedReadInput = ActionInput & {
   readonly requiredFixedInputs?: Schema.JsonObject;
+};
+type ConnectedReadSource = {
+  readonly app: string;
+  readonly inputs: readonly [ConnectedReadInput, ...ConnectedReadInput[]];
 };
 type ConnectedAction = { readonly app: string; readonly expectedAccountId?: string | undefined };
 const gmailReplySlug = "GMAIL_REPLY_TO_THREAD";
@@ -166,6 +171,11 @@ export class ProjectTools extends Context.Service<
       app: string,
       inputs: readonly [ConnectedReadInput, ...ConnectedReadInput[]],
       use: (accountId: string) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, ProjectToolError | E>;
+    readonly withConnectedBotReadSources: <K extends string, A, E>(
+      caller: BotReadCaller,
+      sources: Readonly<Record<K, ConnectedReadSource>>,
+      use: (accountIds: Readonly<Record<K, string>>) => Effect.Effect<A, E>,
     ) => Effect.Effect<A, ProjectToolError | E>;
   }
 >()("@t3tools/tasks-server/projectTools/ProjectTools") {}
@@ -485,6 +495,47 @@ const make = Effect.gen(function* () {
     if (connected !== undefined && effect === "read") yield* recheck;
     return { data, account };
   });
+
+  const checkReadSource = Effect.fn("ProjectTools.checkReadSource")(function* (
+    owner: ActionCaller,
+    { app, inputs: [first, ...rest] }: ConnectedReadSource,
+  ) {
+    const firstAccess = yield* loadAccess(owner, "read", first.slug);
+    const accountId = yield* connectedAccountId(firstAccess, app, first);
+    for (const input of rest) {
+      const access =
+        input.slug === first.slug ? firstAccess : yield* loadAccess(owner, "read", input.slug);
+      if ((yield* connectedAccountId(access, app, input)) !== accountId) {
+        return yield* fail("policy-changed");
+      }
+    }
+    yield* activeAccount(owner.projectId, app, accountId);
+    return accountId;
+  });
+
+  const withConnectedBotReadSources = Effect.fn("ProjectTools.withConnectedBotReadSources")(
+    function* <K extends string, A, E>(
+      caller: BotReadCaller,
+      sources: Readonly<Record<K, ConnectedReadSource>>,
+      use: (accountIds: Readonly<Record<K, string>>) => Effect.Effect<A, E>,
+    ) {
+      const authorize = authorizeBotRead(caller);
+      const initial = yield* authorize;
+      return yield* lock.withLock(
+        initial.projectId,
+        Effect.gen(function* () {
+          const owner = yield* authorize;
+          if (!sameCaller(owner, initial)) return yield* fail("policy-changed");
+          const entries = yield* Effect.forEach(Records.toEntries(sources), ([key, source]) =>
+            checkReadSource(owner, source).pipe(Effect.map((id) => [key, id] as const)),
+          );
+          const accountIds = Object.fromEntries(entries) as Record<K, string>;
+          if (!sameCaller(yield* authorize, owner)) return yield* fail("policy-changed");
+          return yield* use(accountIds);
+        }),
+      );
+    },
+  );
 
   return ProjectTools.of({
     settings: Effect.fn("ProjectTools.settings")(function* (projectId) {
@@ -846,38 +897,13 @@ const make = Effect.gen(function* () {
           { app: "gmail", expectedAccountId: accountId },
         ).pipe(Effect.map(({ data }) => data)),
     ),
-    withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(function* <
-      A,
-      E,
-    >(
-      caller: BotReadCaller,
-      app: string,
-      [first, ...rest]: readonly [ConnectedReadInput, ...ConnectedReadInput[]],
-      use: (accountId: string) => Effect.Effect<A, E>,
-    ) {
-      const authorize = authorizeBotRead(caller);
-      const initial = yield* authorize;
-      return yield* lock.withLock(
-        initial.projectId,
-        Effect.gen(function* () {
-          const owner = yield* authorize;
-          if (!sameCaller(owner, initial)) return yield* fail("policy-changed");
-          const checkAction = Effect.fn("ProjectTools.checkConnectedAction")(function* (
-            input: ConnectedReadInput,
-          ) {
-            const access = yield* loadAccess(owner, "read", input.slug);
-            return yield* connectedAccountId(access, app, input);
-          });
-          const accountId = yield* checkAction(first);
-          for (const input of rest) {
-            if ((yield* checkAction(input)) !== accountId) return yield* fail("policy-changed");
-          }
-          yield* activeAccount(owner.projectId, app, accountId);
-          if (!sameCaller(yield* authorize, owner)) return yield* fail("policy-changed");
-          return yield* use(accountId);
-        }),
-      );
-    }),
+    withConnectedBotReadSources,
+    withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(
+      (caller, app, inputs, use) =>
+        withConnectedBotReadSources(caller, { source: { app, inputs } }, ({ source }) =>
+          use(source),
+        ),
+    ),
   });
 });
 

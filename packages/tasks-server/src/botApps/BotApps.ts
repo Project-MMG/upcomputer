@@ -1,11 +1,14 @@
 import {
   BotAppError,
-  BotAppSnapshot,
+  PaidMediaSnapshot,
   ProjectToolError,
+  SingleSourceBotAppSnapshot,
   type BotAppProposalInput,
   type BotAppReviewInput,
+  type BotAppSnapshot,
   type BotAppState,
   type BotAppTarget,
+  type PaidMediaProposalInput,
   type ShopifyStoreProposalInput,
   type SocialCalendarProposalInput,
 } from "@t3tools/tasks-contracts/v1";
@@ -20,6 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
+import { capturePaidMediaReport, paidMediaSources } from "./paidMedia.ts";
 import { postizSourceAction, readPostizDestinations } from "./postiz.ts";
 import {
   readShopifyExceptions,
@@ -32,11 +36,21 @@ type Invocation = McpInvocationContext["Service"];
 type AppError = BotAppError | ProjectToolError;
 type ShopifyProposal = ShopifyStoreProposalInput & { readonly kind: "shopify-store" };
 type SocialProposal = SocialCalendarProposalInput & { readonly kind: "social-calendar" };
+type PaidMediaProposal = PaidMediaProposalInput & { readonly kind: "paid-media" };
+
+const singleSourceApp = Schema.Struct({
+  accountId: Schema.NullOr(Schema.NonEmptyString),
+  snapshot: SingleSourceBotAppSnapshot,
+});
+const paidMediaApp = Schema.Struct({
+  accountIds: Schema.Struct({ google: Schema.NonEmptyString, meta: Schema.NonEmptyString }),
+  snapshot: PaidMediaSnapshot,
+});
+const storedApp = Schema.fromJsonString(Schema.Union([singleSourceApp, paidMediaApp]));
 type StoredApp = typeof storedApp.Type;
-const storedApp = Schema.fromJsonString(
-  Schema.Struct({ accountId: Schema.NullOr(Schema.NonEmptyString), snapshot: BotAppSnapshot }),
-);
-function appSourceAction(snapshot: BotAppSnapshot) {
+type SingleSourceApp = typeof singleSourceApp.Type;
+
+function appSourceAction(snapshot: SingleSourceApp["snapshot"]) {
   if (!("kind" in snapshot)) return sourceAction(snapshot.definition.source);
   switch (snapshot.kind) {
     case "shopify-store":
@@ -62,7 +76,7 @@ export class BotApps extends Context.Service<
     ) => Effect.Effect<ReturnType<typeof shopifyCatalogFollowUps> | null, AppError>;
     readonly propose: (
       caller: Invocation,
-      input: BotAppProposalInput | SocialProposal | ShopifyProposal,
+      input: BotAppProposalInput | SocialProposal | ShopifyProposal | PaidMediaProposal,
     ) => Effect.Effect<{ readonly revision: string; readonly title: string }, AppError>;
     readonly review: (input: BotAppReviewInput) => Effect.Effect<void, AppError>;
   }
@@ -83,9 +97,20 @@ const make = Effect.gen(function* () {
 
   const withSourceAccess = Effect.fn("BotApps.withSourceAccess")(function* <A>(
     caller: BotAppTarget | Invocation,
-    { accountId, snapshot }: StoredApp,
+    stored: StoredApp,
     use: Effect.Effect<A, AppError>,
   ) {
+    if ("accountIds" in stored) {
+      return yield* tools.withConnectedBotReadSources(
+        caller,
+        paidMediaSources(stored.snapshot.definition),
+        ({ google, meta }) =>
+          google === stored.accountIds.google && meta === stored.accountIds.meta
+            ? use
+            : Effect.fail(new BotAppError({ code: "source-unavailable" })),
+      );
+    }
+    const { accountId, snapshot } = stored;
     const action = appSourceAction(snapshot);
     if (action === null) return yield* use;
     const { app, input } = action;
@@ -99,7 +124,7 @@ const make = Effect.gen(function* () {
   const captureSearchReport = Effect.fn("BotApps.captureSearchReport")(function* (
     caller: Invocation,
     definition: Omit<BotAppProposalInput, "replacesRevision">,
-    previous: StoredApp | null,
+    previous: SingleSourceApp | null,
   ) {
     const { app, input } = sourceAction(definition.source);
     const read = yield* tools.readConnectedBotAction(caller, app, input);
@@ -123,13 +148,13 @@ const make = Effect.gen(function* () {
           metrics,
         },
       },
-    } satisfies StoredApp;
+    } satisfies SingleSourceApp;
   });
 
   const captureShopifyStore = Effect.fn("BotApps.captureShopifyStore")(function* (
     caller: Invocation,
     { kind, title, source }: Omit<ShopifyProposal, "replacesRevision">,
-    previous: StoredApp | null,
+    previous: SingleSourceApp | null,
   ) {
     const { app, input } = shopifyStoreAction(source.store);
     const read = yield* tools.readConnectedBotAction(caller, app, input);
@@ -155,13 +180,13 @@ const make = Effect.gen(function* () {
           ...exceptions,
         },
       },
-    } satisfies StoredApp;
+    } satisfies SingleSourceApp;
   });
 
   const captureSocialCalendar = Effect.fn("BotApps.captureSocialCalendar")(function* (
     caller: Invocation,
     { kind, ...definition }: Omit<SocialProposal, "replacesRevision">,
-    previous: StoredApp | null,
+    previous: SingleSourceApp | null,
   ) {
     const { source, contentPackage } = definition;
     const prior = previous?.snapshot;
@@ -201,7 +226,7 @@ const make = Effect.gen(function* () {
     return {
       accountId,
       snapshot: { kind, definition, revision: yield* uuid, note: "", captionNotes, report },
-    } satisfies StoredApp;
+    } satisfies SingleSourceApp;
   });
 
   const slot = Effect.fn("BotApps.slot")(function* (target: BotAppTarget, json: string | null) {
@@ -257,11 +282,29 @@ const make = Effect.gen(function* () {
         return yield* new BotAppError({ code: "proposal-changed" });
       }
 
-      const stored = yield* !("kind" in definition)
-        ? captureSearchReport(caller, definition, previous)
-        : definition.kind === "social-calendar"
-          ? captureSocialCalendar(caller, definition, previous)
-          : captureShopifyStore(caller, definition, previous);
+      const previousSingleSource = previous && "accountId" in previous ? previous : null;
+      let stored: StoredApp;
+      if (!("kind" in definition)) {
+        stored = yield* captureSearchReport(caller, definition, previousSingleSource);
+      } else {
+        switch (definition.kind) {
+          case "social-calendar":
+            stored = yield* captureSocialCalendar(caller, definition, previousSingleSource);
+            break;
+          case "shopify-store":
+            stored = yield* captureShopifyStore(caller, definition, previousSingleSource);
+            break;
+          case "paid-media": {
+            const { kind, ...app } = definition;
+            const { accountIds, report } = yield* capturePaidMediaReport(tools, caller, app);
+            stored = {
+              accountIds,
+              snapshot: { kind, definition: app, revision: yield* uuid, note: "", report },
+            };
+            break;
+          }
+        }
+      }
       const json = yield* encode(stored).pipe(Effect.mapError(storageError));
       yield* withSourceAccess(
         caller,
@@ -313,14 +356,17 @@ const make = Effect.gen(function* () {
         const { snapshot } = stored;
         let nextProposal: string | null = null;
         if (decision.kind === "annotate") {
-          nextProposal = yield* encode({
-            ...stored,
-            snapshot: { ...snapshot, note: decision.note.trim(), revision: yield* uuid },
-          }).pipe(Effect.mapError(storageError));
+          const annotation = { note: decision.note.trim(), revision: yield* uuid };
+          nextProposal = yield* encode(
+            "accountIds" in stored
+              ? { ...stored, snapshot: { ...stored.snapshot, ...annotation } }
+              : { ...stored, snapshot: { ...stored.snapshot, ...annotation } },
+          ).pipe(Effect.mapError(storageError));
         }
         if (decision.kind === "annotate-caption") {
           const { channel, note } = decision;
           if (
+            "accountIds" in stored ||
             !("kind" in snapshot) ||
             snapshot.kind !== "social-calendar" ||
             !snapshot.definition.contentPackage.posts.some((post) => post.channel === channel)

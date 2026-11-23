@@ -24,6 +24,7 @@ import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/ex
 import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useBots } from "../bots/botData.tsx";
 import { projectToolErrorMessage } from "../projectTools/remoteData.ts";
+import { PaidMediaDashboard } from "./PaidMediaDashboard.tsx";
 import { ShopifyStoreOperations } from "./ShopifyStoreOperations.tsx";
 import { SocialCalendar, type SocialCalendarFilters } from "./SocialCalendar.tsx";
 import { useBotAppState } from "./useBotAppState.ts";
@@ -35,8 +36,13 @@ function Report({
 }: {
   readonly snapshot: Exclude<BotAppSnapshot, SocialCalendarSnapshot>;
 }) {
-  if ("kind" in snapshot) return <ShopifyStoreOperations snapshot={snapshot} />;
-  return <SearchConsoleReport snapshot={snapshot} />;
+  if (!("kind" in snapshot)) return <SearchConsoleReport snapshot={snapshot} />;
+  switch (snapshot.kind) {
+    case "paid-media":
+      return <PaidMediaDashboard snapshot={snapshot} />;
+    case "shopify-store":
+      return <ShopifyStoreOperations snapshot={snapshot} />;
+  }
 }
 
 function SearchConsoleReport({
@@ -162,7 +168,9 @@ function ProposalReview({
           disabled={disabled || dirty}
           onClick={() => review(snapshot.revision, { kind: "approve" })}
         >
-          {gt("Approve app")}
+          {"kind" in snapshot && snapshot.kind === "paid-media"
+            ? gt("Save report")
+            : gt("Approve app")}
         </Button>
         <Button
           size="sm"

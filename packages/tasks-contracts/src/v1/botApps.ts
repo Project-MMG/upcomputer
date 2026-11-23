@@ -4,6 +4,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import { TaskAgentId } from "./agents.ts";
+import { PaidMediaProposedChange, PaidMediaReport, PaidMediaSource } from "./paidMedia.ts";
 import { ProjectToolError } from "./projectTools.ts";
 import { TaskScheduleDate } from "./schedule.ts";
 import { ShopifyStoreReport, ShopifyStoreSource } from "./shopifyStore.ts";
@@ -176,10 +177,34 @@ const socialCalendarSnapshot = Schema.Struct({
 });
 export type SocialCalendarSnapshot = typeof socialCalendarSnapshot.Type;
 
-export const BotAppSnapshot = Schema.Union([
+const paidMediaDefinition = Schema.Struct({
+  title,
+  source: PaidMediaSource,
+  proposedChange: PaidMediaProposedChange,
+});
+export const PaidMediaProposalInput = Schema.Struct({
+  ...paidMediaDefinition.fields,
+  replacesRevision: Schema.optionalKey(revision),
+});
+export type PaidMediaProposalInput = typeof PaidMediaProposalInput.Type;
+
+export const PaidMediaSnapshot = Schema.Struct({
+  kind: Schema.Literal("paid-media"),
+  definition: paidMediaDefinition,
+  revision,
+  note,
+  report: PaidMediaReport,
+});
+export type PaidMediaSnapshot = typeof PaidMediaSnapshot.Type;
+
+export const SingleSourceBotAppSnapshot = Schema.Union([
   searchConsoleSnapshot,
   socialCalendarSnapshot,
   shopifyStoreSnapshot,
+]);
+export const BotAppSnapshot = Schema.Union([
+  ...SingleSourceBotAppSnapshot.members,
+  PaidMediaSnapshot,
 ]);
 export type BotAppSnapshot = typeof BotAppSnapshot.Type;
 
@@ -217,6 +242,10 @@ const messages = {
   "report-empty": "Search Console returned no data for this page and report window.",
   "asset-approval-changed": "The original asset and its approval must stay with this proposal.",
   "caption-unavailable": "This proposal does not have a caption for that channel.",
+  "paid-media-report-invalid": "The ads platform did not return a complete account report.",
+  "paid-media-source-mismatch": "The ads platform returned a different account or campaign.",
+  "paid-media-budget-unavailable": "Choose a Google Ads campaign with its own daily budget.",
+  "paid-media-budget-unchanged": "The proposed daily budget matches the current budget.",
   "postiz-response-invalid": "Postiz returned an unrecognized channel list.",
   "postiz-destination-unavailable": "Postiz could not verify a selected channel destination.",
 } as const;

@@ -1,5 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
+  PaidMediaProposalInput,
   ShopifyStoreProposalInput,
   BotAppProposalInput,
   SocialCalendarProposalInput,
@@ -41,6 +42,17 @@ const toolkit = Toolkit.make(
     description:
       "Propose a Shopify Store operations app for this bot. Supply the permanent myshopify.com domain of the assigned store. Up.computer reads a bounded catalog, inventory and fulfillment sample through the assigned read-only action. To replace a pending proposal, read it and supply its current revision as replacesRevision.",
     parameters: ShopifyStoreProposalInput,
+    success: McpSchema.CallToolResult,
+    failure: OrchestratorMcpFailure,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(McpSchema.EnabledWhen, inThread)
+    .addDependency(McpInvocationContext)
+    .addDependency(ThreadManagementService),
+  Tool.make("bot_app_propose_paid_media", {
+    description:
+      "Propose a Paid Media app with reports for the bot's assigned Google Ads and Meta Ads accounts. Use the Google customer ID and act_-prefixed Meta ad account ID fixed on the read grants, an inclusive date window, and the exact Meta action type to count. Supply a Google Ads campaign ID, proposed daily budget in millionths of its account currency, reason, and a plan to measure the outcome. Up.computer checks the campaign's own daily budget. This saves a proposal for review. To replace a pending proposal, supply its current revision as replacesRevision.",
+    parameters: PaidMediaProposalInput,
     success: McpSchema.CallToolResult,
     failure: OrchestratorMcpFailure,
   })
@@ -107,6 +119,11 @@ const handlers = McpToolAccess.toLayer(
       bot_app_propose_shopify_store: McpToolAccess.actsAsCaller((input) =>
         Effect.flatMap(McpInvocationContext, (caller) =>
           result(apps.propose(caller, { ...input, kind: "shopify-store" })),
+        ),
+      ),
+      bot_app_propose_paid_media: McpToolAccess.actsAsCaller((input) =>
+        Effect.flatMap(McpInvocationContext, (caller) =>
+          result(apps.propose(caller, { ...input, kind: "paid-media" })),
         ),
       ),
       bot_app_get_proposal: McpToolAccess.actsAsCaller(() =>

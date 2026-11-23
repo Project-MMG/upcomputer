@@ -79,6 +79,14 @@ import {
   receipt,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import {
+  googleAdsApp,
+  googleAdsSearch,
+  metaAdsApp,
+  metaAdsCreatives,
+  metaAdsInsights,
+  paidMediaProposal,
+} from "../../../../scripts/scenarios/fixtures/paid-media-data.ts";
+import {
   postizAction,
   postizApp,
   socialProposal,
@@ -169,6 +177,7 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
     return body.result;
   });
   return {
+    proposePaidMedia: (args: Schema.JsonObject) => call("bot_app_propose_paid_media", args),
     proposeShopify: (args: Schema.JsonObject) => call("bot_app_propose_shopify_store", args),
     shopifyCatalog: () => call("bot_app_get_shopify_catalog_follow_ups", {}),
     proposeApp: (args: Schema.JsonObject) => call("bot_app_propose", args),
@@ -1821,6 +1830,188 @@ it.effect("applies bot grants to an own background run and a schedule bound to i
       config: bot.agent.config,
     });
     expect(code(yield* backgroundApi.read(publicRead))).toBe("not-a-bot");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("saves a review-only budget proposal backed by both scoped ads accounts", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const { backend, enableComposio, authenticate } = yield* Fixture;
+    enableComposio();
+    const bot = yield* addBot("Paid Media", firstProject);
+    const anotherBot = yield* addBot("Other", firstProject);
+    const target = { projectId: firstProject, botId: bot.agent.id, threadId: bot.threadId };
+    const caller = yield* authenticate(bot.threadId);
+    const unassigned = yield* authenticate(anotherBot.threadId);
+    const connect = Effect.fn("ProjectToolsTest.connectAdsAccount")(function* (app: string) {
+      const connection = { projectId: firstProject, app };
+      yield* tools.connection({ ...connection, operation: "start" });
+      const account = Array.from(backend.accounts.values()).find(
+        ({ status }) => status === "INITIATED",
+      );
+      if (!account) throw new Error("Expected an initiated fixture account.");
+      account.status = "ACTIVE";
+      account.label = app;
+      yield* tools.connection({ ...connection, operation: "finish" });
+      return account;
+    });
+    const google = yield* connect(googleAdsApp.slug);
+    const meta = yield* connect(metaAdsApp.slug);
+
+    const audience = { kind: "selected", botIds: [bot.agent.id] } as const;
+    const { source } = paidMediaProposal;
+    const grant = (slug: string, fixedInputs: Schema.JsonObject) => ({
+      projectId: firstProject,
+      slug,
+      fixedInputs,
+      audience,
+    });
+    yield* tools.grant(grant(googleAdsSearch.slug, { customer_id: source.googleCustomerId }));
+    yield* tools.grant(grant(metaAdsInsights.slug, { object_id: source.metaAdAccountId }));
+    const creativeGrant = grant(metaAdsCreatives.slug, { ad_account_id: source.metaAdAccountId });
+    expect(code(yield* caller.proposePaidMedia(paidMediaProposal))).toBe("not-assigned");
+    expect(backend.calls).toHaveLength(0);
+    yield* tools.grant(creativeGrant);
+    const wrongSource = { ...source, metaAdAccountId: "act_" + "4".repeat(12) };
+    expect(
+      code(yield* caller.proposePaidMedia({ ...paidMediaProposal, source: wrongSource })),
+    ).toBe("fixed-inputs-required");
+    expect(
+      code(
+        yield* caller.proposePaidMedia({
+          ...paidMediaProposal,
+          source: { ...source, googleCustomerId: "5".repeat(10) },
+        }),
+      ),
+    ).toBe("fixed-inputs-required");
+    expect(code(yield* unassigned.proposePaidMedia(paidMediaProposal))).toBe("not-assigned");
+    expect(backend.calls).toHaveLength(0);
+
+    const operator = yield* botAppsClient([
+      AuthOrchestrationReadScope,
+      AuthOrchestrationOperateScope,
+    ]);
+    const state = operator[BOT_APPS_RPC_METHODS.state];
+    const review = operator[BOT_APPS_RPC_METHODS.review];
+    backend.setPaidMediaReport({ proposal: { ...paidMediaProposal, source: wrongSource } });
+    expect(code(yield* caller.proposePaidMedia(paidMediaProposal))).toBe(
+      "paid-media-source-mismatch",
+    );
+    backend.setPaidMediaReport({ sharedBudget: true });
+    expect(code(yield* caller.proposePaidMedia(paidMediaProposal))).toBe(
+      "paid-media-budget-unavailable",
+    );
+    expect(yield* state(target)).toEqual({ saved: null, proposal: null });
+    backend.setPaidMediaReport(undefined);
+    const beforeRead = backend.calls.length;
+    expect(content(yield* caller.proposePaidMedia(paidMediaProposal))).toMatchObject({
+      title: paidMediaProposal.title,
+    });
+    const reportCalls = backend.calls.slice(beforeRead);
+    expect(reportCalls).toHaveLength(5);
+    expect(reportCalls.filter((call) => call.slug === googleAdsSearch.slug)).toEqual(
+      expect.arrayContaining(
+        ["FROM customer", "FROM ad_group_ad", "FROM campaign"].map((query) =>
+          expect.objectContaining({
+            userId: google.user_id,
+            account: google.id,
+            arguments: {
+              customer_id: source.googleCustomerId,
+              query: expect.stringContaining(query),
+            },
+          }),
+        ),
+      ),
+    );
+    expect(reportCalls.filter((call) => call.account === meta.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: metaAdsInsights.slug,
+          userId: meta.user_id,
+          arguments: expect.objectContaining({
+            object_id: source.metaAdAccountId,
+            time_range: { since: source.window.start, until: source.window.end },
+          }),
+        }),
+        expect.objectContaining({
+          slug: metaAdsCreatives.slug,
+          arguments: expect.objectContaining({ ad_account_id: source.metaAdAccountId, limit: 5 }),
+        }),
+      ]),
+    );
+    const { proposal } = yield* state(target);
+    if (proposal?.status !== "available") throw new Error("Expected a Paid Media proposal.");
+    expect(proposal.snapshot).toMatchObject({
+      kind: "paid-media",
+      definition: paidMediaProposal,
+      report: {
+        campaignName: "Core search campaign",
+        currentDailyBudgetMicros: 75_000_000,
+        google: {
+          currency: "USD",
+          spend: 1234.5,
+          conversions: 42.5,
+          creative: [{ text: "Tools for everyday projects" }],
+        },
+        meta: {
+          currency: "EUR",
+          spend: 842.1,
+          conversions: 17,
+          creative: [{ text: "Make something this weekend · Explore the workshop collection." }],
+        },
+      },
+    });
+    expect(yield* Effect.flip(state({ ...target, projectId: secondProject }))).toMatchObject({
+      code: "not-a-bot",
+    });
+
+    const approve = {
+      ...target,
+      revision: proposal.snapshot.revision,
+      decision: { kind: "approve" },
+    } as const;
+    yield* review({
+      ...approve,
+      decision: { kind: "annotate", note: "Confirm completed orders." },
+    });
+    expect(yield* Effect.flip(review(approve))).toMatchObject({ code: "proposal-changed" });
+    const annotated = (yield* state(target)).proposal;
+    if (annotated?.status !== "available")
+      throw new Error("Expected the annotated budget proposal.");
+    expect(content(yield* caller.appProposal())).toMatchObject({
+      note: "Confirm completed orders.",
+    });
+    const latest = { ...approve, revision: annotated.snapshot.revision };
+    yield* tools.grant({ ...creativeGrant, audience: null });
+    expect((yield* state(target)).proposal).toEqual({
+      status: "unavailable",
+      revision: latest.revision,
+    });
+    expect(yield* Effect.flip(review(latest))).toMatchObject({ code: "not-assigned" });
+
+    yield* tools.grant(creativeGrant);
+    yield* review(latest);
+    expect(yield* state(target)).toEqual({ saved: annotated, proposal: null });
+    expect(backend.calls).toHaveLength(beforeRead + 5);
+
+    backend.setPaidMediaReport({ includeMetaConversion: false });
+    expect(content(yield* caller.proposePaidMedia(paidMediaProposal))).toMatchObject({
+      title: paidMediaProposal.title,
+    });
+    expect((yield* state(target)).proposal).toMatchObject({
+      status: "available",
+      snapshot: { report: { meta: { conversions: null } } },
+    });
+    yield* tools.connection({
+      projectId: firstProject,
+      app: metaAdsApp.slug,
+      operation: "disconnect",
+    });
+    yield* connect(metaAdsApp.slug);
+    expect((yield* state(target)).saved).toEqual({
+      status: "unavailable",
+      revision: latest.revision,
+    });
   }).pipe(Effect.provide(testLayer)),
 );
 

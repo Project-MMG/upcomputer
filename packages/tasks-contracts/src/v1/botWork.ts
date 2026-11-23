@@ -5,6 +5,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import { TaskAgentId, TaskAgentWorkingFolder } from "./agents.ts";
 import { BotAppTarget, BotWorkApp } from "./botApps.ts";
+import { BotRetroReviewInput, BotRetroScheduleInput, BotRetroState } from "./botRetro.ts";
 import { ProjectToolError } from "./projectTools.ts";
 import { TaskId } from "./tasks.ts";
 
@@ -109,6 +110,7 @@ const BotWorkState = Schema.Struct({
   approvals: Schema.Array(BotWorkItem),
   handoffs: Schema.Array(BotWorkItem),
   proposals: Schema.Array(BotSetupProposal),
+  retros: Schema.optionalKey(BotRetroState),
 });
 export type BotWorkState = typeof BotWorkState.Type;
 
@@ -123,6 +125,11 @@ const messages = {
   "coordinator-name": "Choose a name different from the coordinating bot’s name.",
   "ambiguous-name": "Several bots in this project use that name. Choose a distinct name.",
   "setup-unavailable": "Up.computer could not finish this bot setup. Try again.",
+  "retro-team-required": "Open a team dashboard to coordinate retrospectives.",
+  "retro-evidence-unavailable": "Choose a completed bot task with a result in this project.",
+  "retro-schedule-invalid": "Choose a valid time and IANA time zone for the daily queue.",
+  "retro-proposal-unavailable":
+    "This proposal’s review state changed. Refresh the dashboard to continue.",
 } as const;
 
 export class BotWorkError extends Schema.TaggedError<BotWorkError>()("BotWorkError", {
@@ -139,6 +146,8 @@ export const BOT_WORK_RPC_METHODS = {
   state: `${BOT_WORK_RPC_NAMESPACE}.state`,
   configure: `${BOT_WORK_RPC_NAMESPACE}.configure`,
   review: `${BOT_WORK_RPC_NAMESPACE}.review`,
+  retroSchedule: `${BOT_WORK_RPC_NAMESPACE}.retroSchedule`,
+  retroReview: `${BOT_WORK_RPC_NAMESPACE}.retroReview`,
 } as const;
 
 const error = Schema.Union([BotWorkError, ProjectToolError]);
@@ -146,4 +155,6 @@ export const BotWorkRpcGroup = RpcGroup.make(
   Rpc.make(BOT_WORK_RPC_METHODS.state, { payload: BotAppTarget, success: BotWorkState, error }),
   Rpc.make(BOT_WORK_RPC_METHODS.configure, { payload: BotWorkConfigureInput, error }),
   Rpc.make(BOT_WORK_RPC_METHODS.review, { payload: BotSetupReviewInput, error }),
+  Rpc.make(BOT_WORK_RPC_METHODS.retroSchedule, { payload: BotRetroScheduleInput, error }),
+  Rpc.make(BOT_WORK_RPC_METHODS.retroReview, { payload: BotRetroReviewInput, error }),
 );

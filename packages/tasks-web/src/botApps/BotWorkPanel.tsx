@@ -24,6 +24,7 @@ import { readTasksWebClient } from "../environmentApi.ts";
 import { projectToolErrorMessage, useRemoteData } from "../projectTools/remoteData.ts";
 import { botWorkApi } from "../rpc/botWork.ts";
 import { taskKey } from "../ui/shared.ts";
+import { BotRetroPanel } from "./BotRetroPanel.tsx";
 import { BotSetupReview } from "./BotSetupReview.tsx";
 
 function WorkList({
@@ -253,6 +254,14 @@ function WorkDashboard({
             items={data.handoffs}
             roster={data.roster}
           />
+          {data.retros ? (
+            <BotRetroPanel
+              environmentId={environmentId}
+              state={data.retros}
+              api={api}
+              refresh={refresh}
+            />
+          ) : null}
           {data.app.view === "team" ? (
             <Workstreams environmentId={environmentId} owners={data.roster} />
           ) : null}

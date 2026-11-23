@@ -31,6 +31,7 @@ import {
   BOTS_RPC_METHODS,
   BOT_WORK_RPC_METHODS,
   BotsRpcGroup,
+  type BotRetroProposeInput,
   BotWorkRpcGroup,
   BotWriteInput,
   defaultBotAppearance,
@@ -67,6 +68,7 @@ import { AnalyticsService } from "../../../../apps/server/src/telemetry/Analytic
 import * as ServerSettings from "../../../../apps/server/src/serverSettings.ts";
 import { ServerConfig } from "../../../../apps/server/src/config.ts";
 import { ProjectService } from "../../../../apps/server/src/project/ProjectService.ts";
+import * as Scheduler from "../../../../apps/server/src/scheduling/Scheduler.ts";
 import * as SqlitePersistence from "../../../../apps/server/src/persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "../../../../apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts";
 import type * as ProviderAdapter from "../../../provider-core/src/server/ProviderAdapter.ts";
@@ -527,6 +529,7 @@ function makeLayer(
     Layer.provideMerge(CommandReceiptStore.layer),
     Layer.provideMerge(runtime),
     Layer.provideMerge(db),
+    Layer.provideMerge(Scheduler.layer),
     Layer.provideMerge(
       options.analytics === undefined
         ? Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) })
@@ -1680,17 +1683,23 @@ it.live("after a restart an active run's cut turn continues once, inside that ru
     "task-agent-v2-restart-active",
     ({ createTaskWith, runsOf, runWithStatus, threads, started, v2Runs }) =>
       Effect.gen(function* () {
+        const events = yield* EventSink.EventSinkV2;
+        const sequence = yield* events.latestSequence();
         const first = yield* createTaskWith(`Work until stopped. ${HOLD}`);
-        yield* eventually(
-          "the provider turn to run",
-          threads
-            .getThreadRecords(first.threadId, ["providerTurns"])
-            .pipe(
-              Effect.map(({ providerTurns }) =>
-                Option.fromNullishOr(providerTurns.find((turn) => turn.status === "running")),
-              ),
+        const providerStarted = yield* events
+          .stream({
+            threadId: first.threadId,
+            afterSequence: sequence,
+            eventType: "provider-turn.updated",
+          })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "provider-turn.updated" && event.payload.status === "running",
             ),
-        );
+            Stream.runHead,
+          );
+        assert.isTrue(Option.isSome(providerStarted));
 
         yield* recoverAfterRestart;
         yield* eventually("the run to complete", runWithStatus(first.id, "completed"));
@@ -2278,6 +2287,7 @@ it.live(
             "bot_app_get_proposal",
             "bot_app_propose",
             "bot_setup_propose",
+            "bot_retro_propose",
           ]),
         );
 
@@ -2966,7 +2976,97 @@ it.live(
           title: "Other project approval",
           status: "Needs Review",
         });
+        yield* repository.createAgentRun({
+          id: TaskAgentRunId.make("run:verified-report"),
+          taskId: handoff.id,
+          agentId: specialist.agent.id,
+          threadId: specialist.threadId,
+          modelSelection: agentModel,
+          status: "completed",
+          startedAt: timestamp,
+          completedAt: timestamp,
+          continuesRunId: null,
+          triggerRunId: null,
+        });
+        const retroSchedule = {
+          ...target,
+          schedule: { action: "enable", time: "17:00", timezone: "America/Denver" },
+        } as const;
+        for (const attempt of [
+          reader[BOT_WORK_RPC_METHODS.retroSchedule](retroSchedule),
+          writer[BOT_WORK_RPC_METHODS.retroSchedule]({ ...retroSchedule, ...specialistTarget }),
+        ]) {
+          assert.equal((yield* attempt.pipe(Effect.result))._tag, "Failure");
+        }
+        const retro = {
+          evidenceTaskId: handoff.id,
+          outcome: "Fixture report verified.",
+          kind: "instructions",
+          change: "Add the reporting window to the playbook.",
+        } as const;
+        const retroPropose = (input: BotRetroProposeInput) =>
+          callTaskTool(chief.threadId, "bot_retro_propose", input);
+        assert.isTrue((yield* retroPropose({ ...retro, evidenceTaskId: blocked.id })).isError);
+        const proposed = yield* retroPropose(retro);
+        assert.isFalse(proposed.isError, proposed.text);
+        assert.equal(
+          (yield* retroPropose({ ...retro, change: "Different text." })).text,
+          proposed.text,
+        );
+        const entries = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).retros?.entries;
+        assert.lengthOf(entries ?? [], 1);
+        const entry = entries![0]!;
+        const { evidenceTaskId, ...expectedProposal } = retro;
+        assert.deepInclude(entry, {
+          evidenceTaskId,
+          ownerId: specialist.agent.id,
+          proposal: expectedProposal,
+        });
+        assert.isUndefined((yield* reader[BOT_WORK_RPC_METHODS.state](specialistTarget)).retros);
+        const approveRetro = {
+          ...target,
+          date: entry.date,
+          ownerId: entry.ownerId,
+          revision: entry.revision,
+          decision: "approved",
+        } as const;
+        assert.equal(
+          (yield* reader[BOT_WORK_RPC_METHODS.retroReview](approveRetro).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* writer[BOT_WORK_RPC_METHODS.retroReview](approveRetro);
+        yield* writer[BOT_WORK_RPC_METHODS.retroReview](approveRetro);
+        assert.equal(
+          (yield* writer[BOT_WORK_RPC_METHODS.retroReview]({
+            ...approveRetro,
+            decision: "dismissed",
+          }).pipe(Effect.result))._tag,
+          "Failure",
+        );
+
+        const reopen = { ...approveRetro, decision: "reopen" } as const;
+        assert.equal(
+          (yield* reader[BOT_WORK_RPC_METHODS.retroReview](reopen).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* writer[BOT_WORK_RPC_METHODS.retroReview](reopen);
+        const [reopened] = (yield* reader[BOT_WORK_RPC_METHODS.state](target)).retros!.entries;
+        assert.deepInclude(reopened, {
+          decision: null,
+          revision: entry.revision + 1,
+          proposal: expectedProposal,
+        });
+        assert.equal(
+          (yield* writer[BOT_WORK_RPC_METHODS.retroReview](approveRetro).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* writer[BOT_WORK_RPC_METHODS.retroReview]({
+          ...approveRetro,
+          revision: reopened!.revision,
+        });
+
         const team = yield* reader[BOT_WORK_RPC_METHODS.state](target);
+        assert.equal(team.retros?.entries[0]?.decision, "approved");
         assert.deepStrictEqual(
           team.handoffs.map(({ id, ownerId, hasResult }) => ({ id, ownerId, hasResult })),
           [{ id: handoff.id, ownerId: specialist.agent.id, hasResult: true }],

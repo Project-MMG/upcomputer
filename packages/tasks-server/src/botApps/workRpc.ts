@@ -28,6 +28,8 @@ export const BOT_WORK_RPC_CONTRIBUTION = defineNamespacedRpcContribution({
     [M.state]: AuthOrchestrationReadScope,
     [M.configure]: AuthOrchestrationOperateScope,
     [M.review]: AuthOrchestrationOperateScope,
+    [M.retroSchedule]: AuthOrchestrationOperateScope,
+    [M.retroReview]: AuthOrchestrationOperateScope,
   },
   handlers: () =>
     BotWorkRpcGroup.toLayer(
@@ -37,6 +39,8 @@ export const BOT_WORK_RPC_CONTRIBUTION = defineNamespacedRpcContribution({
           [M.state]: (input) => response(work.state(input)),
           [M.configure]: (input) => response(work.configure(input)),
           [M.review]: (input) => response(work.review(input)),
+          [M.retroSchedule]: (input) => response(work.retroSchedule(input)),
+          [M.retroReview]: (input) => response(work.retroReview(input)),
         });
       }),
     ),

@@ -12,6 +12,7 @@ import { GmailWorkspacesMigration } from "./043_GmailWorkspaces.ts";
 import { GmailWorkspaceRevisionsMigration } from "./046_GmailWorkspaceRevisions.ts";
 import { BotAppsMigration } from "./047_BotApps.ts";
 import { BotWorkMigration } from "./048_BotWork.ts";
+import { BotRetrosMigration } from "./049_BotRetros.ts";
 import { GmailRepliesMigration } from "./044_GmailReplies.ts";
 import { GmailReplyAttemptsMigration } from "./045_GmailReplyAttempts.ts";
 import { TasksNewestFirstMigration } from "./031_TasksNewestFirst.ts";
@@ -158,5 +159,6 @@ export const TASK_MIGRATION_CONTRIBUTION = {
     { version: 46, name: "GmailWorkspaceRevisions", run: GmailWorkspaceRevisionsMigration },
     { version: 47, name: "BotApps", run: BotAppsMigration },
     { version: 48, name: "BotWork", run: BotWorkMigration },
+    { version: 49, name: "BotRetros", run: BotRetrosMigration },
   ],
 } as const;

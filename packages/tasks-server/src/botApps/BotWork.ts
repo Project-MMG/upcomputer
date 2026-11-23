@@ -29,6 +29,7 @@ import {
 } from "../../../../apps/server/src/extensionApi.ts";
 import { BotService } from "../bots/BotService.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
+import * as BotRetro from "./BotRetro.ts";
 import { decodeWorkApp, encodeWorkApp } from "./workAppJson.ts";
 import { makeWorkOverview } from "./workOverview.ts";
 
@@ -59,6 +60,9 @@ export class BotWork extends Context.Service<
       WorkError
     >;
     readonly review: (input: BotSetupReviewInput) => Effect.Effect<void, WorkError>;
+    readonly retroSchedule: BotRetro.BotRetro["Service"]["configure"];
+    readonly retroPropose: BotRetro.BotRetro["Service"]["propose"];
+    readonly retroReview: BotRetro.BotRetro["Service"]["review"];
   }
 >()("@t3tools/tasks-server/botApps/BotWork") {}
 
@@ -72,6 +76,7 @@ const make = Effect.gen(function* () {
   const uuid = (yield* SecureRandom.SecureRandom).uuidV4();
   const lock = yield* Semaphore.make(1);
   const overview = yield* makeWorkOverview;
+  const retro = yield* BotRetro.BotRetro;
 
   const registration = Effect.fn("BotWork.registration")(function* ({
     projectId,
@@ -166,16 +171,21 @@ const make = Effect.gen(function* () {
               Effect.mapError(storageError),
             )
           : [];
-      return { app, ...work, proposals };
+      const retros = app.view === "team" ? yield* retro.state(target.projectId) : undefined;
+      return { app, ...work, proposals, ...(retros ? { retros } : {}) };
     }),
 
     configure: Effect.fn("BotWork.configure")(function* ({ action, ...target }) {
       yield* tools.confirmBotChat(target);
       if (action === "remove") {
-        yield* sql`UPDATE bot_apps SET work_app_json = NULL
-          WHERE project_id = ${target.projectId} AND bot_id = ${target.botId}`.pipe(
-          Effect.mapError(storageError),
-        );
+        yield* sql
+          .withTransaction(
+            sql`UPDATE bot_apps SET work_app_json = NULL
+            WHERE project_id = ${target.projectId} AND bot_id = ${target.botId}`.pipe(
+              Effect.andThen(retro.pauseOwnedSchedule(target)),
+            ),
+          )
+          .pipe(Effect.mapError(storageError));
         return;
       }
       if ((yield* registration(target))?.view === "assigned")
@@ -226,6 +236,10 @@ const make = Effect.gen(function* () {
       yield* saveProposal(target, proposal);
       return { roleKey: proposal.roleKey, revision: proposal.revision, state: proposal.state };
     }, lock.withPermits(1)),
+
+    retroSchedule: retro.configure,
+    retroPropose: retro.propose,
+    retroReview: retro.review,
 
     review: Effect.fn("BotWork.review")(function* (input) {
       yield* tools.confirmBotChat(input);
@@ -325,4 +339,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(BotWork, make);
+export const layer = Layer.effect(BotWork, make).pipe(Layer.provide(BotRetro.layer));

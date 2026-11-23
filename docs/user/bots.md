@@ -123,6 +123,19 @@ Open the specialist’s **Tools** settings to confirm the connected account and 
 requested actions. The proposal records the requests. Project tool assignments take
 effect when you save them in **Tools**.
 
+### Review completed work
+
+Ask the coordinating bot to run a retro on a completed project task. In its **Team dashboard**,
+open **Completed work retrospectives** to review the proposal beside the source task. Approving a
+proposal records the decision. Apply the change in the bot's settings or project files. Reopen a
+proposal to review its original text again.
+
+To trial daily reviews, choose a daily time and the project's time zone, then select **Enable
+daily queue**. The queue brings the latest completed task per bot that day to the coordinating bot
+for review. Use **Pause daily queue** to stop future checks and **Resume daily queue** to schedule the
+next check. To review work that finished after the daily check or while the server was offline, ask
+the coordinating bot to run a retro on demand.
+
 ## Open a Gmail inbox beside a bot chat
 
 Connect Gmail in the bot's project and assign **Fetch emails** and **Fetch Message by Thread ID** to

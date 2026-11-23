@@ -8,6 +8,15 @@ import {
 } from "@t3tools/tasks-contracts/v1";
 import { useGT } from "gt-react";
 import { useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../../../../apps/web/src/components/ui/alert-dialog.tsx";
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
 import { Textarea } from "../../../../apps/web/src/components/ui/textarea.tsx";
 import { useExperimentalFeatureRpcPermission } from "../../../../apps/web/src/extensionApi.ts";
@@ -152,6 +161,42 @@ function ProposalReview({
   );
 }
 
+function RemoveSavedApp({
+  disabled,
+  onRemove,
+}: {
+  readonly disabled: boolean;
+  readonly onRemove: () => void;
+}) {
+  const gt = useGT();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button size="sm" variant="ghost" disabled={disabled} onClick={() => setOpen(true)}>
+        {gt("Remove saved app")}
+      </Button>
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{gt("Remove saved app?")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {gt("This removes the approved report and its review note.")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>
+              {gt("Cancel")}
+            </AlertDialogClose>
+            <AlertDialogClose render={<Button variant="destructive" onClick={onRemove} />}>
+              {gt("Remove app")}
+            </AlertDialogClose>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
+  );
+}
+
 function BotApp({
   environmentId,
   bot,
@@ -255,10 +300,21 @@ function BotApp({
             </p>
           ) : null}
           {proposal || saved ? (
-            <div>
+            <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={state.refresh}>
                 {gt("Check access")}
               </Button>
+              {saved ? (
+                <RemoveSavedApp
+                  disabled={disabled}
+                  onRemove={() =>
+                    review(
+                      saved.status === "available" ? saved.snapshot.revision : saved.revision,
+                      { kind: "remove" },
+                    )
+                  }
+                />
+              ) : null}
             </div>
           ) : (
             <p role="status" className="text-sm text-muted-foreground">

@@ -153,14 +153,27 @@ const make = Effect.gen(function* () {
     }),
     review: Effect.fn("BotApps.review")(function* (input) {
       yield* tools.confirmBotChat(input);
-      const { proposal } = yield* load(input);
-      if (proposal === null) return yield* new BotAppError({ code: "proposal-changed" });
-      const stored = yield* decode(proposal).pipe(Effect.mapError(storageError));
-      if (stored.snapshot.revision !== input.revision) {
-        return yield* new BotAppError({ code: "proposal-changed" });
+      const { projectId, botId, decision, revision } = input;
+      const row = yield* load(input);
+      if (decision.kind === "remove") {
+        if (row.saved === null) return yield* new BotAppError({ code: "saved-app-changed" });
+        const saved = yield* decode(row.saved).pipe(Effect.mapError(storageError));
+        if (saved.snapshot.revision !== revision) {
+          return yield* new BotAppError({ code: "saved-app-changed" });
+        }
+        const removed = yield* sql`UPDATE bot_apps SET saved_json = NULL
+          WHERE project_id = ${projectId} AND bot_id = ${botId} AND saved_json = ${row.saved}
+          RETURNING bot_id`.pipe(Effect.mapError(storageError));
+        if (!removed.length) return yield* new BotAppError({ code: "saved-app-changed" });
+        return;
       }
 
-      const { projectId, botId, decision } = input;
+      const { proposal } = row;
+      if (proposal === null) return yield* new BotAppError({ code: "proposal-changed" });
+      const stored = yield* decode(proposal).pipe(Effect.mapError(storageError));
+      if (stored.snapshot.revision !== revision) {
+        return yield* new BotAppError({ code: "proposal-changed" });
+      }
       const update = Effect.gen(function* () {
         const nextProposal =
           decision.kind === "annotate"

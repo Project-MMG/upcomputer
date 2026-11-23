@@ -147,6 +147,8 @@ If the account or action becomes unavailable, the app keeps its saved report and
 Restore the original connection and assignment, then choose **Check access**. A report from a
 different account needs its own review.
 
+To discard the approved report, open the app and choose **Remove saved app**.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

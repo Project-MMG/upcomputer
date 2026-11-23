@@ -1491,6 +1491,15 @@ it.effect(
       expect(pending).toMatchObject({ status: "available", snapshot: { note: "" } });
       expect((yield* getState(owner)).saved).toEqual(annotated);
       if (pending?.status !== "available") throw new Error("Expected a pending replacement");
+      expect(
+        yield* Effect.flip(
+          review({
+            ...owner,
+            revision: pending.snapshot.revision,
+            decision: { kind: "remove" },
+          }),
+        ),
+      ).toMatchObject({ code: "saved-app-changed" });
 
       yield* tools.grant({ ...grant, audience: null });
       expect(yield* getState(owner)).toEqual({
@@ -1514,6 +1523,15 @@ it.effect(
       expect(
         yield* Effect.flip(review({ ...owner, revision: pending.snapshot.revision, decision })),
       ).toMatchObject({ code: "source-unavailable" });
+      yield* review({
+        ...owner,
+        revision: annotated.snapshot.revision,
+        decision: { kind: "remove" },
+      });
+      expect(yield* getState(owner)).toEqual({
+        saved: null,
+        proposal: { status: "unavailable", revision: pending.snapshot.revision },
+      });
       yield* review({
         ...owner,
         revision: pending.snapshot.revision,

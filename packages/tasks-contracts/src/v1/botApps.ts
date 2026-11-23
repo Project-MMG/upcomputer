@@ -95,6 +95,7 @@ export const BotAppReviewInput = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("annotate"), note }),
     Schema.Struct({ kind: Schema.Literal("approve") }),
     Schema.Struct({ kind: Schema.Literal("dismiss") }),
+    Schema.Struct({ kind: Schema.Literal("remove") }),
   ]),
 });
 export type BotAppReviewInput = typeof BotAppReviewInput.Type;
@@ -102,6 +103,7 @@ export type BotAppReviewInput = typeof BotAppReviewInput.Type;
 const messages = {
   "storage-unavailable": "Up.computer could not load or save this bot app.",
   "proposal-changed": "The proposal changed. Open the latest version to continue.",
+  "saved-app-changed": "The saved app changed. Open the latest version to continue.",
   "source-unavailable":
     "This bot app’s source access has changed. Check its account and tool assignment.",
   "report-invalid": "Search Console returned a report that did not match the requested page.",

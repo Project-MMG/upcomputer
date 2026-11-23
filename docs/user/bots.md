@@ -204,6 +204,20 @@ spend, conversion reporting, and creative. The campaign proposal shows the curre
 proposed daily budget, and measurement plan. **Save report** keeps the reviewed snapshot for
 reopening. Apply any budget decision separately in Google Ads.
 
+## Review a Klaviyo lifecycle plan
+
+Connect Klaviyo in the bot's project. In **Tools**, assign **Get Account** to the bot and fix its
+`id` to the assigned Klaviyo account ID. Assign **Get Segment** and the applicable pair of reads:
+**Get Campaign** and **Query Campaign Values**, or **Get Flow** and **Query Flow Values**.
+
+Ask the bot to propose a Lifecycle app for one campaign or flow. Give it a date range in the
+Klaviyo account's time zone, an existing target segment, and the conversion metric ID Klaviyo
+requires for the report. Open **Bot Apps** in
+the chat's right pane or in **Bot Settings**, then choose **Review proposal**. Check the source
+report and open the segment definition to review eligibility. Check the proposed timing, email
+draft, and success measure. **Save plan** keeps the reviewed proposal in Bot Apps. Manage any
+subsequent scheduling and audience changes in Klaviyo.
+
 ## Remove a bot
 
 Click **Remove bot** at the bottom of the bot's page. This deletes its memory. Its chat goes back

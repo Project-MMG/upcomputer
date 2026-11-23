@@ -79,6 +79,17 @@ import {
   receipt,
 } from "../../../../scripts/scenarios/fixtures/gmail-workspace-data.ts";
 import {
+  klaviyoApp,
+  klaviyoCampaignValues,
+  klaviyoFlowValues,
+  klaviyoGetAccount,
+  klaviyoGetCampaign,
+  klaviyoGetFlow,
+  klaviyoGetSegment,
+  lifecycleFlowProposal,
+  lifecycleProposal,
+} from "../../../../scripts/scenarios/fixtures/lifecycle-data.ts";
+import {
   googleAdsApp,
   googleAdsSearch,
   metaAdsApp,
@@ -177,6 +188,7 @@ const mcpSession = Effect.fn("ProjectToolsTest.mcpSession")(function* (token: st
     return body.result;
   });
   return {
+    proposeLifecycle: (args: Schema.JsonObject) => call("bot_app_propose_lifecycle", args),
     proposePaidMedia: (args: Schema.JsonObject) => call("bot_app_propose_paid_media", args),
     proposeShopify: (args: Schema.JsonObject) => call("bot_app_propose_shopify_store", args),
     shopifyCatalog: () => call("bot_app_get_shopify_catalog_follow_ups", {}),
@@ -2149,4 +2161,185 @@ it.effect(
       expect(code(yield* caller.shopifyCatalog())).toBe("source-unavailable");
       expect(backend.calls).toHaveLength(3);
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("reviews a Klaviyo email plan under the selected bot and verified account", () =>
+  Effect.gen(function* () {
+    const tools = yield* ProjectTools.ProjectTools;
+    const { backend, enableComposio, authenticate } = yield* Fixture;
+    enableComposio();
+    const bot = yield* addBot("Lifecycle", firstProject);
+    const other = yield* addBot("Other", firstProject);
+    const foreign = yield* addBot("Foreign Lifecycle", secondProject);
+    const target = { projectId: firstProject, botId: bot.agent.id, threadId: bot.threadId };
+    const caller = yield* authenticate(bot.threadId);
+    const unassigned = yield* authenticate(other.threadId);
+    const anotherProject = yield* authenticate(foreign.threadId);
+    const connection = { projectId: firstProject, app: klaviyoApp.slug };
+    const connect = Effect.fn("ProjectToolsTest.connectKlaviyoAccount")(function* () {
+      yield* tools.connection({ ...connection, operation: "start" });
+      const account = [...backend.accounts.values()].find(({ status }) => status === "INITIATED");
+      if (!account) throw new Error("Expected a pending Klaviyo fixture account.");
+      account.status = "ACTIVE";
+      account.label = "Workshop email";
+      yield* tools.connection({ ...connection, operation: "finish" });
+      return account;
+    });
+    const account = yield* connect();
+    const { source } = lifecycleProposal;
+    const grant = (slug: string, fixedInputs: Schema.JsonObject = {}) => ({
+      projectId: firstProject,
+      slug,
+      fixedInputs,
+      audience: { kind: "selected", botIds: [bot.agent.id] } as const,
+    });
+    const accountGrant = grant(klaviyoGetAccount.slug, { id: source.accountId });
+    const reportGrant = grant(klaviyoCampaignValues.slug);
+    yield* tools.grant(accountGrant);
+    yield* tools.grant(grant(klaviyoGetCampaign.slug));
+    yield* tools.grant(grant(klaviyoGetSegment.slug));
+    expect(code(yield* caller.proposeLifecycle(lifecycleProposal))).toBe("not-assigned");
+    yield* tools.grant(grant(klaviyoCampaignValues.slug, { page_cursor: "unapproved-page" }));
+    expect(code(yield* caller.proposeLifecycle(lifecycleProposal))).toBe("fixed-inputs-required");
+    yield* tools.grant(reportGrant);
+    expect(code(yield* unassigned.proposeLifecycle(lifecycleProposal))).toBe("not-assigned");
+    expect(code(yield* anotherProject.proposeLifecycle(lifecycleProposal))).toBe("not-assigned");
+    expect(
+      code(
+        yield* caller.proposeLifecycle({
+          ...lifecycleProposal,
+          source: { ...source, accountId: "fixture-foreign-account" },
+        }),
+      ),
+    ).toBe("fixed-inputs-required");
+    expect(backend.calls).toHaveLength(0);
+
+    const reader = yield* botAppsClient([AuthOrchestrationReadScope]);
+    const operator = yield* botAppsClient([
+      AuthOrchestrationReadScope,
+      AuthOrchestrationOperateScope,
+    ]);
+    const state = operator[BOT_APPS_RPC_METHODS.state];
+    const review = operator[BOT_APPS_RPC_METHODS.review];
+    backend.setLifecycleReport({ accountId: "fixture-foreign-account" });
+    expect(code(yield* caller.proposeLifecycle(lifecycleProposal))).toBe(
+      "lifecycle-source-mismatch",
+    );
+    expect(backend.calls.map(({ slug }) => slug)).toEqual([klaviyoGetAccount.slug]);
+    for (const [fixture, error] of [
+      [{ reportId: "fixture-other-campaign" }, "lifecycle-source-mismatch"],
+      [{ empty: true }, "lifecycle-report-empty"],
+      [{ partial: true }, "lifecycle-report-invalid"],
+    ] as const) {
+      backend.setLifecycleReport(fixture);
+      expect(code(yield* caller.proposeLifecycle(lifecycleProposal))).toBe(error);
+      expect(yield* state(target)).toEqual({ saved: null, proposal: null });
+    }
+
+    backend.setLifecycleReport(undefined);
+    const firstRead = backend.calls.length;
+    expect(content(yield* caller.proposeLifecycle(lifecycleProposal))).toMatchObject({
+      title: lifecycleProposal.title,
+    });
+    const calls = backend.calls.slice(firstRead);
+    expect(calls.map(({ slug }) => slug)).toEqual([
+      klaviyoGetAccount.slug,
+      klaviyoGetCampaign.slug,
+      klaviyoGetSegment.slug,
+      klaviyoCampaignValues.slug,
+    ]);
+    expect(
+      calls.every((call) => call.account === account.id && call.userId === account.user_id),
+    ).toBe(true);
+    expect(calls.at(-1)?.arguments).toMatchObject({
+      data__attributes__filter: `equals(campaign_id,"${source.record.id}")`,
+      data__attributes__timeframe: {
+        start: "2026-10-01T00:00:00Z",
+        end: "2026-10-14T23:59:59.999Z",
+      },
+      data__attributes__statistics: ["delivered", "clicks", "unsubscribes"],
+    });
+    const { proposal } = yield* state(target);
+    if (proposal?.status !== "available") throw new Error("Expected the Klaviyo proposal.");
+    expect(proposal.snapshot).toMatchObject({
+      kind: "lifecycle",
+      definition: lifecycleProposal,
+      report: {
+        accountName: "Workshop email",
+        accountTimeZone: "America/Los_Angeles",
+        record: {
+          name: "Autumn workshop roundup",
+          sendTime: "2026-10-06T16:00:00Z",
+          included: [source.segmentId],
+          smartSending: true,
+        },
+        segment: {
+          name: "Repeat workshop subscribers",
+          requiresEmailOptIn: true,
+          profileCount: 1800,
+        },
+        performance: { delivered: 1800, clicks: 123, unsubscribes: 6 },
+      },
+    });
+    expect(JSON.stringify(proposal.snapshot)).not.toContain("fixture-only-condition");
+    expect(yield* Effect.flip(state({ ...target, projectId: secondProject }))).toMatchObject({
+      code: "not-a-bot",
+    });
+    expect(
+      yield* state({ projectId: firstProject, botId: other.agent.id, threadId: other.threadId }),
+    ).toEqual({ saved: null, proposal: null });
+    const approval = {
+      ...target,
+      revision: proposal.snapshot.revision,
+      decision: { kind: "approve" },
+    } as const;
+    expect(yield* Effect.flip(reader[BOT_APPS_RPC_METHODS.review](approval))).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+    });
+    yield* review({
+      ...approval,
+      decision: { kind: "annotate", note: "Confirm subscriber eligibility before scheduling." },
+    });
+    expect(yield* Effect.flip(review(approval))).toMatchObject({ code: "proposal-changed" });
+    const annotated = (yield* state(target)).proposal;
+    if (annotated?.status !== "available")
+      throw new Error("Expected the annotated Klaviyo proposal.");
+    const latest = { ...approval, revision: annotated.snapshot.revision };
+    yield* tools.grant({ ...reportGrant, audience: null });
+    expect((yield* state(target)).proposal).toEqual({
+      status: "unavailable",
+      revision: latest.revision,
+    });
+    expect(yield* Effect.flip(review(latest))).toMatchObject({ code: "not-assigned" });
+    expect(code(yield* caller.appProposal())).toBe("not-assigned");
+    yield* tools.grant(reportGrant);
+    yield* review(latest);
+    expect(yield* state(target)).toEqual({ saved: annotated, proposal: null });
+    expect(backend.calls).toHaveLength(firstRead + calls.length);
+
+    yield* tools.grant(grant(klaviyoGetFlow.slug));
+    yield* tools.grant(grant(klaviyoFlowValues.slug));
+    backend.setLifecycleReport({ optionalConsent: true });
+    expect(content(yield* caller.proposeLifecycle(lifecycleFlowProposal))).toMatchObject({
+      title: lifecycleFlowProposal.title,
+    });
+    expect(content(yield* caller.appProposal())).toMatchObject({
+      report: {
+        record: {
+          kind: "flow",
+          name: "Workshop welcome",
+          trigger: "Added to List",
+          delays: [{ value: 2, unit: "days" }],
+        },
+        segment: { requiresEmailOptIn: false },
+        performance: { delivered: 1800, clicks: 123, unsubscribes: 6 },
+      },
+    });
+    yield* tools.connection({ ...connection, operation: "disconnect" });
+    yield* connect();
+    expect((yield* state(target)).saved).toEqual({
+      status: "unavailable",
+      revision: latest.revision,
+    });
+  }).pipe(Effect.provide(testLayer)),
 );

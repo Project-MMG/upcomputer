@@ -8,6 +8,7 @@ import {
   type BotAppSnapshot,
   type BotAppState,
   type BotAppTarget,
+  type LifecycleProposalInput,
   type PaidMediaProposalInput,
   type ShopifyStoreProposalInput,
   type SocialCalendarProposalInput,
@@ -23,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
+import { captureLifecycleReport, klaviyoSource } from "./klaviyo.ts";
 import { capturePaidMediaReport, paidMediaSources } from "./paidMedia.ts";
 import { postizSourceAction, readPostizDestinations } from "./postiz.ts";
 import {
@@ -36,6 +38,7 @@ type Invocation = McpInvocationContext["Service"];
 type AppError = BotAppError | ProjectToolError;
 type ShopifyProposal = ShopifyStoreProposalInput & { readonly kind: "shopify-store" };
 type SocialProposal = SocialCalendarProposalInput & { readonly kind: "social-calendar" };
+type LifecycleProposal = LifecycleProposalInput & { readonly kind: "lifecycle" };
 type PaidMediaProposal = PaidMediaProposalInput & { readonly kind: "paid-media" };
 
 const singleSourceApp = Schema.Struct({
@@ -50,14 +53,23 @@ const storedApp = Schema.fromJsonString(Schema.Union([singleSourceApp, paidMedia
 type StoredApp = typeof storedApp.Type;
 type SingleSourceApp = typeof singleSourceApp.Type;
 
-function appSourceAction(snapshot: SingleSourceApp["snapshot"]) {
-  if (!("kind" in snapshot)) return sourceAction(snapshot.definition.source);
+function singleActionSource({
+  app,
+  input,
+}: ReturnType<typeof sourceAction | typeof postizSourceAction | typeof shopifyStoreAction>) {
+  return { app, inputs: [input] } as const;
+}
+
+function appReadSource(snapshot: SingleSourceApp["snapshot"]) {
+  if (!("kind" in snapshot)) return singleActionSource(sourceAction(snapshot.definition.source));
   switch (snapshot.kind) {
     case "shopify-store":
-      return shopifyStoreAction(snapshot.definition.source.store);
+      return singleActionSource(shopifyStoreAction(snapshot.definition.source.store));
+    case "lifecycle":
+      return klaviyoSource(snapshot.definition.source);
     case "social-calendar": {
       const { source } = snapshot.definition;
-      return source.kind === "local" ? null : postizSourceAction(source);
+      return source.kind === "local" ? null : singleActionSource(postizSourceAction(source));
     }
   }
 }
@@ -76,7 +88,12 @@ export class BotApps extends Context.Service<
     ) => Effect.Effect<ReturnType<typeof shopifyCatalogFollowUps> | null, AppError>;
     readonly propose: (
       caller: Invocation,
-      input: BotAppProposalInput | SocialProposal | ShopifyProposal | PaidMediaProposal,
+      input:
+        | BotAppProposalInput
+        | SocialProposal
+        | ShopifyProposal
+        | PaidMediaProposal
+        | LifecycleProposal,
     ) => Effect.Effect<{ readonly revision: string; readonly title: string }, AppError>;
     readonly review: (input: BotAppReviewInput) => Effect.Effect<void, AppError>;
   }
@@ -111,13 +128,16 @@ const make = Effect.gen(function* () {
       );
     }
     const { accountId, snapshot } = stored;
-    const action = appSourceAction(snapshot);
-    if (action === null) return yield* use;
-    const { app, input } = action;
-    return yield* tools.withConnectedBotReadAccess(caller, app, [input], (currentAccountId) =>
-      currentAccountId === accountId
-        ? use
-        : Effect.fail(new BotAppError({ code: "source-unavailable" })),
+    const source = appReadSource(snapshot);
+    if (source === null) return yield* use;
+    return yield* tools.withConnectedBotReadAccess(
+      caller,
+      source.app,
+      source.inputs,
+      (currentAccountId) =>
+        currentAccountId === accountId
+          ? use
+          : Effect.fail(new BotAppError({ code: "source-unavailable" })),
     );
   });
 
@@ -294,6 +314,15 @@ const make = Effect.gen(function* () {
           case "shopify-store":
             stored = yield* captureShopifyStore(caller, definition, previousSingleSource);
             break;
+          case "lifecycle": {
+            const { kind, ...app } = definition;
+            const { accountId, report } = yield* captureLifecycleReport(tools, caller, app.source);
+            stored = {
+              accountId,
+              snapshot: { kind, definition: app, revision: yield* uuid, note: "", report },
+            };
+            break;
+          }
           case "paid-media": {
             const { kind, ...app } = definition;
             const { accountIds, report } = yield* capturePaidMediaReport(tools, caller, app);

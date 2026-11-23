@@ -4,6 +4,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import { TaskAgentId } from "./agents.ts";
+import { LifecycleFollowUp, LifecycleReport, LifecycleSource } from "./lifecycle.ts";
 import { PaidMediaProposedChange, PaidMediaReport, PaidMediaSource } from "./paidMedia.ts";
 import { ProjectToolError } from "./projectTools.ts";
 import { TaskScheduleDate } from "./schedule.ts";
@@ -197,10 +198,31 @@ export const PaidMediaSnapshot = Schema.Struct({
 });
 export type PaidMediaSnapshot = typeof PaidMediaSnapshot.Type;
 
+const lifecycleDefinition = Schema.Struct({
+  title,
+  source: LifecycleSource,
+  followUp: LifecycleFollowUp,
+});
+export const LifecycleProposalInput = Schema.Struct({
+  ...lifecycleDefinition.fields,
+  replacesRevision: Schema.optionalKey(revision),
+});
+export type LifecycleProposalInput = typeof LifecycleProposalInput.Type;
+
+const lifecycleSnapshot = Schema.Struct({
+  kind: Schema.Literal("lifecycle"),
+  definition: lifecycleDefinition,
+  revision,
+  note,
+  report: LifecycleReport,
+});
+export type LifecycleSnapshot = typeof lifecycleSnapshot.Type;
+
 export const SingleSourceBotAppSnapshot = Schema.Union([
   searchConsoleSnapshot,
   socialCalendarSnapshot,
   shopifyStoreSnapshot,
+  lifecycleSnapshot,
 ]);
 export const BotAppSnapshot = Schema.Union([
   ...SingleSourceBotAppSnapshot.members,
@@ -242,6 +264,9 @@ const messages = {
   "report-empty": "Search Console returned no data for this page and report window.",
   "asset-approval-changed": "The original asset and its approval must stay with this proposal.",
   "caption-unavailable": "This proposal does not have a caption for that channel.",
+  "lifecycle-report-invalid": "Klaviyo did not return a complete lifecycle report.",
+  "lifecycle-source-mismatch": "Klaviyo returned a different account, record, or segment.",
+  "lifecycle-report-empty": "Klaviyo returned no email performance for this report window.",
   "paid-media-report-invalid": "The ads platform did not return a complete account report.",
   "paid-media-source-mismatch": "The ads platform returned a different account or campaign.",
   "paid-media-budget-unavailable": "Choose a Google Ads campaign with its own daily budget.",

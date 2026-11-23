@@ -381,6 +381,12 @@ function BotApp({
                   snapshot={saved.snapshot}
                   filters={filters}
                   setFilters={setFilters}
+                  schedule={saved.socialSchedule}
+                  scheduleReview={
+                    proposal === null
+                      ? { disabled, send: (decision) => review(saved.snapshot.revision, decision) }
+                      : undefined
+                  }
                 />
               ) : (
                 <Report snapshot={saved.snapshot} />

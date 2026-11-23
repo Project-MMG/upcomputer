@@ -45,6 +45,7 @@ import {
   ThreadManagementService,
 } from "../../../../apps/server/src/extensionApi.ts";
 import { ProjectTools } from "../projectTools/ProjectTools.ts";
+import { reviewedWriteFailureStatus } from "../projectTools/reviewedWrites.ts";
 
 const layoutJson = Schema.fromJsonString(GmailWorkspaceLayout);
 const decodeLayout = Schema.decodeUnknownEffect(layoutJson);
@@ -715,13 +716,8 @@ const make = Effect.gen(function* () {
                 ? ({ status: "sent", messageId: message.id } as const)
                 : ({ status: "uncertain", messageId: null } as const);
             },
-            onFailure: ({ code, status }) => ({
-              status:
-                code === "action-outcome-unknown" || code === "action-failed" || status === 408
-                  ? ("uncertain" as const)
-                  : ("failed" as const),
-              messageId: null,
-            }),
+            onFailure: (error) =>
+              ({ status: reviewedWriteFailureStatus(error), messageId: null }) as const,
           });
           if (outcome.status !== "uncertain") {
             yield* sql`UPDATE gmail_workspace_reply_attempts

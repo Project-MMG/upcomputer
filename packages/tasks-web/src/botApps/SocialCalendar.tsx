@@ -3,7 +3,9 @@ import {
   SOCIAL_CALENDAR_CHANNELS,
   type BotAppReviewInput,
   type SocialCalendarChannel,
+  type SocialCalendarPost,
   type SocialCalendarSnapshot,
+  type SocialSchedule,
 } from "@t3tools/tasks-contracts/v1";
 import { useGT } from "gt-react";
 import { CalendarDaysIcon, ExternalLinkIcon } from "lucide-react";
@@ -15,6 +17,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogPanel,
   DialogPopup,
   DialogTitle,
   DialogTrigger,
@@ -109,19 +112,167 @@ function CaptionNote({
   );
 }
 
+function ScheduleFixture({
+  post,
+  account,
+  destination,
+  group,
+  mediaUrl,
+  review,
+}: {
+  readonly post: SocialCalendarPost;
+  readonly account: string;
+  readonly destination: string;
+  readonly group: string | undefined;
+  readonly mediaUrl: string;
+  readonly review: Review;
+}) {
+  const gt = useGT();
+  const channel = channelNames[post.channel];
+  return (
+    <Dialog>
+      <DialogTrigger
+        render={
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={review.disabled}
+            aria-label={gt("Review {channel} fixture schedule", { channel })}
+          />
+        }
+      >
+        {gt("Review fixture schedule")}
+      </DialogTrigger>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>{gt("Schedule fixture post?")}</DialogTitle>
+          <DialogDescription>{gt("Send this post to the Postiz test fixture.")}</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <dl className="grid gap-3 break-words text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <dt className="text-xs text-muted-foreground">{gt("Account")}</dt>
+                <dd>{account}</dd>
+                {group ? <dd className="text-xs">{gt("Group · {group}", { group })}</dd> : null}
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">{gt("Destination")}</dt>
+                <dd>{destination}</dd>
+                {post.destination.kind === "postiz" ? (
+                  <dd className="break-all text-xs">{post.destination.integrationId}</dd>
+                ) : null}
+              </div>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{gt("Publish time (UTC)")}</dt>
+              <dd>
+                <time dateTime={post.publishAt}>{post.publishAt}</time>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">
+                {gt("{channel} caption", { channel })}
+              </dt>
+              <dd className="whitespace-pre-wrap">{post.caption}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{gt("Media URL")}</dt>
+              <dd className="break-all">{mediaUrl}</dd>
+            </div>
+          </dl>
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>{gt("Cancel")}</DialogClose>
+          <DialogClose
+            render={
+              <Button
+                disabled={review.disabled}
+                onClick={() =>
+                  review.send({ kind: "schedule-social-fixture", channel: post.channel })
+                }
+              />
+            }
+          >
+            {gt("Approve & schedule fixture")}
+          </DialogClose>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+function PublishingStatus({
+  delivery,
+}: {
+  readonly delivery: SocialSchedule["delivery"] | undefined;
+}) {
+  const gt = useGT();
+  switch (delivery?.status) {
+    case "scheduled":
+      return (
+        <>
+          <dd>
+            {delivery.matchesPost
+              ? gt("Scheduled in fixture")
+              : gt("Earlier version scheduled in fixture")}
+          </dd>
+          <dd className="break-all text-muted-foreground">
+            {gt("Receipt · {id}", { id: delivery.receiptId })}
+          </dd>
+        </>
+      );
+    case "uncertain":
+      return (
+        <>
+          <dd>
+            {delivery.matchesPost
+              ? gt("Fixture delivery uncertain")
+              : gt("Earlier fixture delivery uncertain")}
+          </dd>
+          <dd className="text-muted-foreground">
+            {gt(
+              "Check the fixture provider for this destination and time before scheduling again.",
+            )}
+          </dd>
+        </>
+      );
+    case "failed":
+      return (
+        <>
+          <dd>{gt("Fixture schedule failed")}</dd>
+          <dd className="text-muted-foreground">
+            {gt("Review a new proposal before trying again.")}
+          </dd>
+        </>
+      );
+    case "ready":
+      return <dd>{gt("Ready for fixture approval")}</dd>;
+    default:
+      return <dd>{gt("Proposal only")}</dd>;
+  }
+}
+
 export function SocialCalendar({
   snapshot,
   filters: { channel, from, to },
   setFilters,
   review,
+  schedule = [],
+  scheduleReview,
 }: {
   readonly snapshot: SocialCalendarSnapshot;
   readonly filters: SocialCalendarFilters;
   readonly setFilters: (filters: SocialCalendarFilters) => void;
   readonly review?: Review;
+  readonly schedule?: readonly SocialSchedule[] | undefined;
+  readonly scheduleReview?: Review | undefined;
 }) {
   const gt = useGT();
-  const { asset, posts } = snapshot.definition.contentPackage;
+  const {
+    source,
+    contentPackage: { asset, posts },
+  } = snapshot.definition;
   const { report } = snapshot;
   const channelOptions = [
     { value: "all", label: gt("All channels") },
@@ -228,7 +379,9 @@ export function SocialCalendar({
           </p>
         ) : (
           <ol className="grid gap-2">
-            {visiblePosts.map(({ channel, destination, publishAt, caption }) => {
+            {visiblePosts.map((post) => {
+              const { channel, destination, publishAt, caption } = post;
+              const delivery = schedule.find((item) => item.channel === channel)?.delivery;
               const captionNote = snapshot.captionNotes.find((item) => item.channel === channel);
               const target =
                 destination.kind === "local"
@@ -261,7 +414,7 @@ export function SocialCalendar({
                     </div>
                     <div>
                       <dt className="text-muted-foreground">{gt("Publishing status")}</dt>
-                      <dd>{gt("Proposal only")}</dd>
+                      <PublishingStatus delivery={delivery} />
                     </div>
                     <div className="col-span-2">
                       <dt className="text-muted-foreground">{gt("Media")}</dt>
@@ -283,6 +436,22 @@ export function SocialCalendar({
                         channel={channel}
                         initialNote={captionNote?.note ?? ""}
                         review={review}
+                      />
+                    </div>
+                  ) : null}
+                  {scheduleReview &&
+                  delivery?.status === "ready" &&
+                  report &&
+                  source.kind === "postiz" ? (
+                    <div>
+                      <ScheduleFixture
+                        key={snapshot.revision}
+                        post={post}
+                        account={report.accountLabel}
+                        destination={target}
+                        group={source.group}
+                        mediaUrl={asset.mediaUrl}
+                        review={scheduleReview}
                       />
                     </div>
                   ) : null}

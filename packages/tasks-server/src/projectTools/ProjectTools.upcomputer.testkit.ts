@@ -27,6 +27,7 @@ import {
   postizAction,
   postizApp,
   postizChannels,
+  postizScheduleFixture,
   socialProposal,
 } from "../../../../scripts/scenarios/fixtures/social-calendar-data.ts";
 import {
@@ -129,6 +130,7 @@ export const makeComposioFixture = () => {
     shopifyRead,
     searchAction,
     postizAction,
+    postizScheduleFixture,
     googleAdsSearch,
     metaAdsInsights,
     metaAdsCreatives,
@@ -336,6 +338,16 @@ export const makeComposioFixture = () => {
           return response({
             result_type: "completed",
             data: { successful: true, data: { structuredContent: postizChannels } },
+          });
+        }
+        if (input.tool_slug === postizScheduleFixture.slug) {
+          return response({
+            result_type: "completed",
+            data: {
+              id: "fixture-post-receipt",
+              integration_id: input.arguments.integration_id,
+              publish_at: input.arguments.publish_at,
+            },
           });
         }
         return response({

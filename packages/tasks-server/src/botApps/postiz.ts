@@ -1,22 +1,6 @@
-import {
-  BotAppError,
-  type SocialCalendarPost,
-  type SocialCalendarSource,
-} from "@t3tools/tasks-contracts/v1";
+import { BotAppError, type SocialCalendarPost } from "@t3tools/tasks-contracts/v1";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-
-export function postizSourceAction(source: Extract<SocialCalendarSource, { kind: "postiz" }>) {
-  const args: Schema.JsonObject = source.group === undefined ? {} : { group: source.group };
-  return {
-    app: "postiz_mcp",
-    input: {
-      slug: "POSTIZ_MCP_INTEGRATION_LIST",
-      arguments: args,
-      requiredFixedInputs: args,
-    },
-  };
-}
 
 const noError = Schema.optionalKey(Schema.Literal(false));
 const integration = Schema.Struct({

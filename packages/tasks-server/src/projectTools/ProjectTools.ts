@@ -36,6 +36,12 @@ import {
 import { BotService } from "../bots/BotService.ts";
 import { makeArgumentValidator } from "./actionArguments.ts";
 import { Composio } from "./Composio.ts";
+import {
+  postizApp,
+  postizScheduleFixtureSlug,
+  postizSourceAction,
+  type SocialFixtureArguments,
+} from "./postizActions.ts";
 
 type Invocation = McpInvocationContext["Service"];
 type Connector = Composio["Service"];
@@ -59,7 +65,11 @@ type ConnectedReadSource = {
   readonly app: string;
   readonly inputs: readonly [ConnectedReadInput, ...ConnectedReadInput[]];
 };
-type ConnectedAction = { readonly app: string; readonly expectedAccountId?: string | undefined };
+type ConnectedAction = {
+  readonly app: string;
+  readonly expectedAccountId?: string | undefined;
+  readonly reviewedSource?: ConnectedReadSource;
+};
 const gmailReplySlug = "GMAIL_REPLY_TO_THREAD";
 const isGmailWrite = (action: ProjectToolAction) =>
   action.app === "gmail" && (action.effect === "write" || action.slug === gmailReplySlug);
@@ -97,6 +107,11 @@ const sameActionAccess = (saved: ProjectToolAction, current: ProjectToolAction) 
   saved.app === current.app &&
   saved.effect === current.effect &&
   saved.requiresAccount === current.requiresAccount;
+
+const matchesFixedInputs = (args: Schema.JsonObject, fixed: Schema.JsonObject) =>
+  Object.entries(fixed).every(
+    ([key, value]) => Object.hasOwn(args, key) && Equal.equals(args[key], value),
+  );
 
 export class ProjectTools extends Context.Service<
   ProjectTools,
@@ -166,6 +181,16 @@ export class ProjectTools extends Context.Service<
         execute: Effect.Effect<Schema.Json, ProjectToolError>,
       ) => Effect.Effect<A, ProjectToolError>,
     ) => Effect.Effect<A, ProjectToolError>;
+    readonly hasSocialFixtureGrant: (
+      target: BotAccess,
+      args: SocialFixtureArguments,
+    ) => Effect.Effect<boolean, ProjectToolError>;
+    readonly scheduleApprovedSocialFixture: <A, E>(
+      target: BotAccess,
+      accountId: string,
+      args: SocialFixtureArguments,
+      attempt: (execute: Effect.Effect<Schema.Json, ProjectToolError>) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, ProjectToolError | E>;
     readonly withConnectedBotReadAccess: <A, E>(
       caller: BotReadCaller,
       app: string,
@@ -353,11 +378,13 @@ const make = Effect.gen(function* () {
     caller: ActionCaller,
     effect: ProjectToolAction["effect"],
     target: string | ProjectToolActionDetails,
+    requireActionGrant = false,
   ) {
     if (caller.plan && effect === "write") return yield* fail("plan-mode");
     const slug = typeof target === "string" ? target : target.slug;
     const row = yield* getActionGrant(caller.projectId, slug);
     const direct = row && includesBot(row.grant, caller.botId) ? row.grant : null;
+    if (requireActionGrant && !direct) return yield* fail("not-assigned");
     const full = direct
       ? []
       : (yield* listAppGrants(caller.projectId)).filter(({ grant }) =>
@@ -420,16 +447,20 @@ const make = Effect.gen(function* () {
   const sameCaller = (left: ActionCaller, right: ActionCaller) =>
     left.runId === right.runId && left.botId === right.botId && left.projectId === right.projectId;
 
-  const withActionSession = Effect.fn("ProjectTools.withActionSession")(function* <A>(
+  const withActionSession = Effect.fn("ProjectTools.withActionSession")(function* <A, E>(
     authorize: Effect.Effect<ActionCaller, ProjectToolError>,
     effect: ProjectToolAction["effect"],
     input: ConnectedReadInput,
-    use: (
-      execute: Effect.Effect<Schema.Json, ProjectToolError>,
-    ) => Effect.Effect<A, ProjectToolError>,
+    use: (execute: Effect.Effect<Schema.Json, ProjectToolError>) => Effect.Effect<A, E>,
     connected?: ConnectedAction,
   ) {
-    const initial = yield* loadAccess(yield* authorize, effect, input.slug);
+    const owner = yield* authorize;
+    if (connected === undefined && input.slug === postizScheduleFixtureSlug) {
+      return yield* fail("social-approval-required");
+    }
+    const reviewedSource = connected?.reviewedSource;
+    const requireActionGrant = reviewedSource !== undefined;
+    const initial = yield* loadAccess(owner, effect, input.slug, requireActionGrant);
     const { live } = initial;
     const approvedWrite = effect === "write" && connected !== undefined;
     const directGmailWrite = connected === undefined && isGmailWrite(live);
@@ -439,13 +470,10 @@ const make = Effect.gen(function* () {
     if (connected !== undefined) {
       const accountId = yield* connectedAccountId(initial, connected.app, input);
       if (connected.expectedAccountId !== undefined && connected.expectedAccountId !== accountId) {
-        return yield* fail("workspace-account-changed");
+        return yield* fail(reviewedSource ? "account-unavailable" : "workspace-account-changed");
       }
     }
-    if (
-      approvedWrite &&
-      Object.keys(initial.fixedInputs).some((key) => !Object.hasOwn(input.arguments, key))
-    ) {
+    if (approvedWrite && !matchesFixedInputs(input.arguments, initial.fixedInputs)) {
       return yield* fail("workspace-input-conflict");
     }
     const args = approvedWrite ? input.arguments : { ...input.arguments, ...initial.fixedInputs };
@@ -463,7 +491,7 @@ const make = Effect.gen(function* () {
       accountId: initial.accountId,
     };
     const recheck = Effect.gen(function* () {
-      const current = yield* loadAccess(yield* authorize, effect, live);
+      const current = yield* loadAccess(yield* authorize, effect, live, requireActionGrant);
       if (
         !sameCaller(current, initial) ||
         current.policy !== initial.policy ||
@@ -482,10 +510,17 @@ const make = Effect.gen(function* () {
         if (approvedWrite && account) {
           return lock.withLock(
             initial.projectId,
-            activeAccount(initial.projectId, live.app, account.id).pipe(
-              Effect.andThen(recheck),
-              Effect.andThen(use(execute)),
-            ),
+            Effect.gen(function* () {
+              if (reviewedSource) {
+                if ((yield* checkReadSource(owner, reviewedSource)) !== account.id) {
+                  return yield* fail("account-unavailable");
+                }
+              } else {
+                yield* activeAccount(initial.projectId, live.app, account.id);
+              }
+              yield* recheck;
+              return yield* use(execute);
+            }),
           );
         }
         return recheck.pipe(Effect.andThen(use(execute)));
@@ -759,7 +794,9 @@ const make = Effect.gen(function* () {
         hasGmailWorkspace({ projectId, botId }),
       ]);
       const canRun = (item: ProjectToolAction) =>
-        (!plan || item.effect === "read") && (!gmailWorkspace || !isGmailWrite(item));
+        item.slug !== postizScheduleFixtureSlug &&
+        (!plan || item.effect === "read") &&
+        (!gmailWorkspace || !isGmailWrite(item));
       const assigned = savedActions.filter((grant) => includesBot(grant, botId));
       const full = savedApps.flatMap(({ grant }) => (includesBot(grant, botId) ? [grant.app] : []));
       const fullApp = full.find(({ slug }) => slug === app);
@@ -896,6 +933,34 @@ const make = Effect.gen(function* () {
           attempt,
           { app: "gmail", expectedAccountId: accountId },
         ).pipe(Effect.map(({ data }) => data)),
+    ),
+    hasSocialFixtureGrant: Effect.fn("ProjectTools.hasSocialFixtureGrant")(
+      function* (target, args) {
+        const row = yield* getActionGrant(target.projectId, postizScheduleFixtureSlug);
+        return (
+          row !== null &&
+          includesBot(row.grant, target.botId) &&
+          row.grant.action.app === postizApp &&
+          row.grant.action.effect === "write" &&
+          row.grant.action.requiresAccount &&
+          matchesFixedInputs({ ...args }, row.grant.fixedInputs)
+        );
+      },
+    ),
+    scheduleApprovedSocialFixture: Effect.fn("ProjectTools.scheduleApprovedSocialFixture")(
+      (target, accountId, args, attempt) => {
+        const { app, input } = postizSourceAction({
+          kind: "postiz",
+          ...(args.group === undefined ? {} : { group: args.group }),
+        });
+        return withActionSession(
+          confirmBotChat(target),
+          "write",
+          { slug: postizScheduleFixtureSlug, arguments: { ...args } },
+          attempt,
+          { app, expectedAccountId: accountId, reviewedSource: { app, inputs: [input] } },
+        ).pipe(Effect.map(({ data }) => data));
+      },
     ),
     withConnectedBotReadSources,
     withConnectedBotReadAccess: Effect.fn("ProjectTools.withConnectedBotReadAccess")(

@@ -1,4 +1,4 @@
-import type { ProjectId } from "@t3tools/contracts";
+import type { AuthSessionId, ProjectId } from "@t3tools/contracts";
 import {
   BotAppError,
   PaidMediaSnapshot,
@@ -30,9 +30,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
 import * as Bots from "../bots/BotService.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
+import { postizSourceAction } from "../projectTools/postizActions.ts";
+import { makeSocialSchedule } from "./socialSchedule.ts";
 import { captureLifecycleReport, klaviyoSource } from "./klaviyo.ts";
 import { capturePaidMediaReport, paidMediaSources } from "./paidMedia.ts";
-import { postizSourceAction, readPostizDestinations } from "./postiz.ts";
+import { readPostizDestinations } from "./postiz.ts";
 import {
   readShopifyExceptions,
   shopifyCatalogFollowUps,
@@ -109,7 +111,10 @@ export class BotApps extends Context.Service<
         | LifecycleProposal
         | OutboundProposal,
     ) => Effect.Effect<{ readonly revision: string; readonly title: string }, AppError>;
-    readonly review: (input: BotAppReviewInput) => Effect.Effect<void, AppError>;
+    readonly review: (
+      input: BotAppReviewInput,
+      approvalSessionId: AuthSessionId,
+    ) => Effect.Effect<void, AppError>;
   }
 >()("@t3tools/tasks-server/botApps/BotApps") {}
 
@@ -118,6 +123,7 @@ const make = Effect.gen(function* () {
   const tools = yield* ProjectTools.ProjectTools;
   const bots = yield* Bots.BotService;
   const uuid = (yield* SecureRandom.SecureRandom).uuidV4();
+  const socialSchedule = yield* makeSocialSchedule;
 
   const load = Effect.fn("BotApps.load")(function* ({ projectId, botId }: BotAppTarget) {
     const [row] = yield* sql<{ proposal: string | null; saved: string | null }>`
@@ -329,13 +335,32 @@ const make = Effect.gen(function* () {
     } satisfies SingleSourceApp;
   });
 
-  const slot = Effect.fn("BotApps.slot")(function* (target: BotAppTarget, json: string | null) {
+  const slot = Effect.fn("BotApps.slot")(function* (
+    target: BotAppTarget,
+    json: string | null,
+    allowSchedule?: boolean,
+  ) {
     if (json === null) return null;
     const stored = yield* decode(json).pipe(Effect.mapError(storageError));
     return yield* withSourceAccess(
       target,
       stored,
-      Effect.succeed({ status: "available", snapshot: stored.snapshot } as const),
+      Effect.gen(function* () {
+        const { snapshot } = stored;
+        const schedule =
+          allowSchedule !== undefined &&
+          "accountId" in stored &&
+          stored.accountId &&
+          "kind" in snapshot &&
+          snapshot.kind === "social-calendar"
+            ? yield* socialSchedule.read(target, stored.accountId, snapshot, allowSchedule)
+            : [];
+        return {
+          status: "available",
+          snapshot,
+          ...(schedule.length ? { socialSchedule: schedule } : {}),
+        } as const;
+      }),
     ).pipe(
       Effect.orElseSucceed(
         () => ({ status: "unavailable", revision: stored.snapshot.revision }) as const,
@@ -347,7 +372,7 @@ const make = Effect.gen(function* () {
     state: Effect.fn("BotApps.state")(function* (target) {
       yield* tools.confirmBotChat(target);
       const row = yield* load(target);
-      const saved = yield* slot(target, row.saved);
+      const saved = yield* slot(target, row.saved, row.proposal === null);
       const proposal = yield* slot(target, row.proposal);
       return { saved, proposal };
     }),
@@ -454,10 +479,34 @@ const make = Effect.gen(function* () {
       );
       return { revision: stored.snapshot.revision, title: definition.title };
     }),
-    review: Effect.fn("BotApps.review")(function* (input) {
+    review: Effect.fn("BotApps.review")(function* (input, approvalSessionId) {
       yield* tools.confirmBotChat(input);
       const { projectId, botId, decision, revision } = input;
       const row = yield* load(input);
+      if (decision.kind === "schedule-social-fixture") {
+        if (row.saved === null || row.proposal !== null) {
+          return yield* new BotAppError({ code: "saved-app-changed" });
+        }
+        const saved = yield* decode(row.saved).pipe(Effect.mapError(storageError));
+        if (saved.snapshot.revision !== revision) {
+          return yield* new BotAppError({ code: "saved-app-changed" });
+        }
+        if (
+          !("accountId" in saved) ||
+          !saved.accountId ||
+          !("kind" in saved.snapshot) ||
+          saved.snapshot.kind !== "social-calendar"
+        ) {
+          return yield* new BotAppError({ code: "social-schedule-unavailable" });
+        }
+        return yield* socialSchedule.approve(
+          input,
+          approvalSessionId,
+          row.saved,
+          { accountId: saved.accountId, snapshot: saved.snapshot },
+          decision.channel,
+        );
+      }
       if (decision.kind === "remove") {
         if (row.saved === null) return yield* new BotAppError({ code: "saved-app-changed" });
         const saved = yield* decode(row.saved).pipe(Effect.mapError(storageError));

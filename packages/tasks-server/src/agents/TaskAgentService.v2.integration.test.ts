@@ -2243,6 +2243,8 @@ it.live(
             "bot_app_propose_shopify_store",
             "bot_app_propose_paid_media",
             "bot_app_propose_lifecycle",
+            "bot_app_propose_outbound",
+            "bot_app_get_outbound_handoff",
             "gmail_workspace_save",
             "gmail_workspace_check",
             "gmail_workspace_record_reply",

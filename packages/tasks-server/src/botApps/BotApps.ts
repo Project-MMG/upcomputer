@@ -1,3 +1,4 @@
+import type { ProjectId } from "@t3tools/contracts";
 import {
   BotAppError,
   PaidMediaSnapshot,
@@ -9,9 +10,13 @@ import {
   type BotAppState,
   type BotAppTarget,
   type LifecycleProposalInput,
+  type OutboundOpportunity,
+  type OutboundProposalInput,
+  type OutboundSnapshot,
   type PaidMediaProposalInput,
   type ShopifyStoreProposalInput,
   type SocialCalendarProposalInput,
+  type TaskAgentId,
 } from "@t3tools/tasks-contracts/v1";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -23,6 +28,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationContext } from "../../../../apps/server/src/extensionApi.ts";
+import * as Bots from "../bots/BotService.ts";
 import * as ProjectTools from "../projectTools/ProjectTools.ts";
 import { captureLifecycleReport, klaviyoSource } from "./klaviyo.ts";
 import { capturePaidMediaReport, paidMediaSources } from "./paidMedia.ts";
@@ -40,6 +46,7 @@ type ShopifyProposal = ShopifyStoreProposalInput & { readonly kind: "shopify-sto
 type SocialProposal = SocialCalendarProposalInput & { readonly kind: "social-calendar" };
 type LifecycleProposal = LifecycleProposalInput & { readonly kind: "lifecycle" };
 type PaidMediaProposal = PaidMediaProposalInput & { readonly kind: "paid-media" };
+type OutboundProposal = OutboundProposalInput & { readonly kind: "outbound" };
 
 const singleSourceApp = Schema.Struct({
   accountId: Schema.NullOr(Schema.NonEmptyString),
@@ -67,6 +74,8 @@ function appReadSource(snapshot: SingleSourceApp["snapshot"]) {
       return singleActionSource(shopifyStoreAction(snapshot.definition.source.store));
     case "lifecycle":
       return klaviyoSource(snapshot.definition.source);
+    case "outbound":
+      return null;
     case "social-calendar": {
       const { source } = snapshot.definition;
       return source.kind === "local" ? null : singleActionSource(postizSourceAction(source));
@@ -86,6 +95,10 @@ export class BotApps extends Context.Service<
     readonly shopifyCatalog: (
       caller: Invocation,
     ) => Effect.Effect<ReturnType<typeof shopifyCatalogFollowUps> | null, AppError>;
+    readonly outboundHandoff: (
+      caller: Invocation,
+      opportunityId: string,
+    ) => Effect.Effect<OutboundOpportunity | null, AppError>;
     readonly propose: (
       caller: Invocation,
       input:
@@ -93,7 +106,8 @@ export class BotApps extends Context.Service<
         | SocialProposal
         | ShopifyProposal
         | PaidMediaProposal
-        | LifecycleProposal,
+        | LifecycleProposal
+        | OutboundProposal,
     ) => Effect.Effect<{ readonly revision: string; readonly title: string }, AppError>;
     readonly review: (input: BotAppReviewInput) => Effect.Effect<void, AppError>;
   }
@@ -102,6 +116,7 @@ export class BotApps extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tools = yield* ProjectTools.ProjectTools;
+  const bots = yield* Bots.BotService;
   const uuid = (yield* SecureRandom.SecureRandom).uuidV4();
 
   const load = Effect.fn("BotApps.load")(function* ({ projectId, botId }: BotAppTarget) {
@@ -110,6 +125,71 @@ const make = Effect.gen(function* () {
       WHERE project_id = ${projectId} AND bot_id = ${botId}
     `.pipe(Effect.mapError(storageError));
     return row ?? { proposal: null, saved: null };
+  });
+
+  const outboundOwnerName = Effect.fn("BotApps.outboundOwnerName")(function* (
+    projectId: ProjectId,
+    ownerId: TaskAgentId,
+  ) {
+    const owner = yield* bots.forAgent(ownerId).pipe(Effect.mapError(storageError));
+    if (!owner?.agent.enabled || owner.projectId !== projectId) {
+      return yield* new BotAppError({ code: "outbound-owner-unavailable" });
+    }
+    return owner.agent.name;
+  });
+
+  const captureOutbound = Effect.fn("BotApps.captureOutbound")(function* (
+    projectId: ProjectId,
+    { kind, title, opportunities: candidates }: Omit<OutboundProposal, "replacesRevision">,
+  ) {
+    const opportunities = yield* Effect.forEach(candidates, (candidate) =>
+      outboundOwnerName(projectId, candidate.ownerId).pipe(
+        Effect.map((ownerName) => ({ ...candidate, ownerName, disposition: "pending" as const })),
+      ),
+    );
+    return {
+      accountId: null,
+      snapshot: { kind, definition: { title, opportunities }, revision: yield* uuid, note: "" },
+    } satisfies SingleSourceApp;
+  });
+
+  const approveOutbound = Effect.fn("BotApps.approveOutbound")(function* (
+    { projectId, botId }: BotAppTarget,
+    snapshot: OutboundSnapshot,
+    { decisions, note }: Extract<BotAppReviewInput["decision"], { kind: "approve-outbound" }>,
+  ) {
+    const { definition } = snapshot;
+    const dispositions = new Map(decisions.map(({ id, disposition }) => [id, disposition]));
+    if (dispositions.size !== definition.opportunities.length) {
+      return yield* new BotAppError({ code: "outbound-decisions-changed" });
+    }
+    const opportunities = yield* Effect.forEach(
+      definition.opportunities,
+      Effect.fnUntraced(function* (opportunity) {
+        const disposition = dispositions.get(opportunity.id);
+        if (!disposition) return yield* new BotAppError({ code: "outbound-decisions-changed" });
+        if (disposition === "pending") {
+          return yield* new BotAppError({ code: "outbound-decisions-pending" });
+        }
+        if (disposition === "handoff" && opportunity.ownerId === botId) {
+          return yield* new BotAppError({ code: "outbound-handoff-unavailable" });
+        }
+        const ownerName =
+          disposition === "handoff"
+            ? yield* outboundOwnerName(projectId, opportunity.ownerId)
+            : opportunity.ownerName;
+        return { ...opportunity, ownerName, disposition };
+      }),
+    );
+    return yield* encode({
+      accountId: null,
+      snapshot: {
+        ...snapshot,
+        definition: { ...definition, opportunities },
+        revision: yield* uuid,
+        note: note.trim(),
+      },
+    }).pipe(Effect.mapError(storageError));
   });
 
   const withSourceAccess = Effect.fn("BotApps.withSourceAccess")(function* <A>(
@@ -291,6 +371,19 @@ const make = Effect.gen(function* () {
         Effect.sync(() => shopifyCatalogFollowUps(snapshot)),
       );
     }),
+    outboundHandoff: Effect.fn("BotApps.outboundHandoff")(function* (caller, opportunityId) {
+      const owner = yield* tools.confirmCaller(caller);
+      const { saved } = yield* load(owner);
+      if (saved === null) return null;
+      const { snapshot } = yield* decode(saved).pipe(Effect.mapError(storageError));
+      if (!("kind" in snapshot) || snapshot.kind !== "outbound") return null;
+      const opportunity = snapshot.definition.opportunities.find(
+        ({ id, disposition }) => id === opportunityId && disposition === "handoff",
+      );
+      if (!opportunity) return null;
+      const ownerName = yield* outboundOwnerName(owner.projectId, opportunity.ownerId);
+      return { ...opportunity, ownerName };
+    }),
     propose: Effect.fn("BotApps.propose")(function* (caller, { replacesRevision, ...definition }) {
       const owner = yield* tools.confirmCaller(caller);
       if (owner.plan) return yield* new ProjectToolError({ code: "plan-mode" });
@@ -323,6 +416,9 @@ const make = Effect.gen(function* () {
             };
             break;
           }
+          case "outbound":
+            stored = yield* captureOutbound(projectId, definition);
+            break;
           case "paid-media": {
             const { kind, ...app } = definition;
             const { accountIds, report } = yield* capturePaidMediaReport(tools, caller, app);
@@ -384,6 +480,7 @@ const make = Effect.gen(function* () {
       const update = Effect.gen(function* () {
         const { snapshot } = stored;
         let nextProposal: string | null = null;
+        let nextSaved: string | null = null;
         if (decision.kind === "annotate") {
           const annotation = { note: decision.note.trim(), revision: yield* uuid };
           nextProposal = yield* encode(
@@ -409,9 +506,18 @@ const make = Effect.gen(function* () {
             snapshot: { ...snapshot, captionNotes, revision: yield* uuid },
           }).pipe(Effect.mapError(storageError));
         }
+        const outbound = "kind" in snapshot && snapshot.kind === "outbound" ? snapshot : null;
+        if (decision.kind === "approve") {
+          if (outbound) return yield* new BotAppError({ code: "outbound-decisions-changed" });
+          nextSaved = proposal;
+        }
+        if (decision.kind === "approve-outbound") {
+          if (!outbound) return yield* new BotAppError({ code: "outbound-decisions-changed" });
+          nextSaved = yield* approveOutbound(input, outbound, decision);
+        }
         const written = yield* sql`UPDATE bot_apps SET
           proposal_json = ${nextProposal},
-          saved_json = CASE WHEN ${decision.kind} = 'approve' THEN ${proposal} ELSE saved_json END
+          saved_json = COALESCE(${nextSaved}, saved_json)
           WHERE project_id = ${projectId} AND bot_id = ${botId} AND proposal_json = ${proposal}
           RETURNING bot_id`.pipe(Effect.mapError(storageError));
         if (!written.length) return yield* new BotAppError({ code: "proposal-changed" });

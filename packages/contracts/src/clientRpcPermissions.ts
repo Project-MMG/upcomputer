@@ -88,6 +88,8 @@ const CLIENT_GUARDED_FEATURE_RPC_SCOPES = {
   "upcomputer.bot-apps.v1.review": AuthOrchestrationOperateScope,
   "upcomputer.bot-work.v1.configure": AuthOrchestrationOperateScope,
   "upcomputer.bot-work.v1.review": AuthOrchestrationOperateScope,
+  "upcomputer.bot-work.v1.retroSchedule": AuthOrchestrationOperateScope,
+  "upcomputer.bot-work.v1.retroReview": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.save": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.remove": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.remember": AuthOrchestrationOperateScope,

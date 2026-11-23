@@ -42,6 +42,7 @@ export { registerHeartbeatCounts } from "./telemetry/HeartbeatCounts.ts";
 export { registerTurnContextResolver, TurnContextRefusal } from "./orchestration-v2/TurnContext.ts";
 export { registerThreadProjectMoveGate } from "./orchestration-v2/ThreadProjectMoveGate.ts";
 export { forkParked } from "./serverActivation.ts";
+export { Scheduler } from "./scheduling/Scheduler.ts";
 export {
   UPCOMPUTER_PRODUCT_FLAGS,
   UPSTREAM_PRODUCT_FLAGS,

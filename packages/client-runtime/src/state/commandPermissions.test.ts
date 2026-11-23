@@ -86,6 +86,8 @@ describe("command permissions", () => {
           ].map((name) => `upcomputer.bots.v1.${name}`),
           "upcomputer.bot-work.v1.configure",
           "upcomputer.bot-work.v1.review",
+          "upcomputer.bot-work.v1.retroSchedule",
+          "upcomputer.bot-work.v1.retroReview",
         ]) {
           const bot = createCommandPermissions(runtime, method);
           registry.set(sessions(env), AsyncResult.success(grant(false)));

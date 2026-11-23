@@ -9,6 +9,8 @@ import {
 import { Button } from "../../../../apps/web/src/components/ui/button.tsx";
 import type { ExperimentalWebRightPanelSurfaceProps } from "../../../../apps/web/src/product/WebFeature.ts";
 import { useRightPanelStore } from "../../../../apps/web/src/rightPanelStore.ts";
+import { savedBotAppSurfaceId } from "../botApps/surface.ts";
+import { useBotAppState } from "../botApps/useBotAppState.ts";
 import { gmailWorkspaceSurfaceId } from "../gmailWorkspace/surface.ts";
 import { useGmailWorkspaceLayout } from "../gmailWorkspace/useGmailWorkspaceLayout.ts";
 import { useBots } from "./botData.tsx";
@@ -24,53 +26,82 @@ export function BotApps({
 }) {
   const gt = useGT();
   const navigate = useNavigate();
+  const { state } = useBotAppState(environmentId, bot);
   const { ref, layout } = useGmailWorkspaceLayout(environmentId, {
     threadId: bot.threadId,
     projectId: bot.projectId,
     botId: bot.agent.id,
   });
-  if (layout.error) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <p role="alert" className="text-sm text-muted-foreground">
-          {layout.error}
-        </p>
-        <Button size="sm" variant="outline" onClick={layout.refresh} disabled={layout.loading}>
-          {gt("Retry")}
-        </Button>
-      </div>
-    );
-  }
-  if (!layout.data) {
+  const open = (surface: string) => {
+    useRightPanelStore.getState().openFeature(ref, surface);
+    if (fromSettings) {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId: bot.threadId },
+      });
+    }
+  };
+  const { saved, proposal } = state.data ?? {};
+  const app = state.loading || state.error ? null : (proposal ?? saved);
+  const gmail = layout.error ? null : layout.data;
+  const error = layout.error ?? state.error;
+  if (!gmail && !app && !error) {
     return (
       <p role="status" className="text-sm text-muted-foreground">
-        {layout.loading ? gt("Loading bot apps…") : gt("This bot has no saved apps yet.")}
+        {layout.loading || state.loading
+          ? gt("Loading bot apps…")
+          : gt("This bot has no saved apps yet.")}
       </p>
     );
   }
   return (
     <SettingsSection title={gt("Bot Apps")} hideTitle>
-      <SettingsRow
-        title={layout.data.title}
-        description={gt("Gmail inbox")}
-        control={
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              useRightPanelStore.getState().openFeature(ref, gmailWorkspaceSurfaceId);
-              if (fromSettings) {
-                void navigate({
-                  to: "/$environmentId/$threadId",
-                  params: { environmentId, threadId: bot.threadId },
-                });
-              }
-            }}
-          >
-            {gt("Open in right pane")}
-          </Button>
-        }
-      />
+      {gmail ? (
+        <SettingsRow
+          title={gmail.title}
+          description={gt("Gmail inbox")}
+          control={
+            <Button size="sm" variant="outline" onClick={() => open(gmailWorkspaceSurfaceId)}>
+              {gt("Open in right pane")}
+            </Button>
+          }
+        />
+      ) : null}
+      {app ? (
+        <SettingsRow
+          title={app.status === "available" ? app.snapshot.definition.title : gt("Bot app")}
+          description={
+            app.status === "unavailable"
+              ? gt("Source unavailable")
+              : proposal
+                ? gt("Awaiting review")
+                : gt("Saved app")
+          }
+          control={
+            <Button size="sm" variant="outline" onClick={() => open(savedBotAppSurfaceId)}>
+              {proposal ? gt("Review proposal") : gt("Open in right pane")}
+            </Button>
+          }
+        />
+      ) : null}
+      {error ? (
+        <SettingsRow
+          title={gt("Couldn’t load bot apps")}
+          description={<span role="alert">{error}</span>}
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                layout.refresh();
+                state.refresh();
+              }}
+            >
+              {gt("Retry")}
+            </Button>
+          }
+        />
+      ) : null}
     </SettingsSection>
   );
 }

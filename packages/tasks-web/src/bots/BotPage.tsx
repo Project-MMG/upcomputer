@@ -9,7 +9,7 @@ import {
 import { useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, BanIcon, DicesIcon, InfoIcon, XIcon } from "lucide-react";
 import { useGT, useMessages } from "gt-react";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { describeError } from "@t3tools/client-runtime/errors";
 import {
   DEFAULT_RUNTIME_MODE,
@@ -31,6 +31,8 @@ import {
   defaultBotAppearance,
 } from "@t3tools/tasks-contracts/v1";
 import {
+  useProject,
+  useQuietThreadShell,
   useServerConfigs,
   useThreadShell,
   waitForThreadShell,
@@ -500,6 +502,7 @@ function BotForm({
           />
         </SettingsSection>
 
+        {bot ? <BotProfile environmentId={environmentId} bot={bot} /> : null}
         <SettingsSection title={gt("Instructions")} hideTitle>
           <SettingsRow title={gt("Instructions")}>
             <div className="pt-1 pb-2 text-sm text-foreground [&_textarea]:resize-none [&_textarea]:px-0">
@@ -714,6 +717,35 @@ function BotForm({
         </AlertDialogPopup>
       </AlertDialog>
     </WorkspaceViewLayout>
+  );
+}
+
+function BotProfile({
+  environmentId,
+  bot,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly bot: Bot;
+}) {
+  const gt = useGT();
+  const project = useProject(scopeProjectRef(environmentId, bot.projectId));
+  const shell = useQuietThreadShell(scopeThreadRef(environmentId, bot.threadId));
+  const folder = shell?.worktreePath ?? project?.workspaceRoot;
+  const { role, skills } = bot.agent.config;
+  return (
+    <SettingsSection title={gt("Operating profile")} hideTitle>
+      <SettingsRow title={gt("Role")} description={role} />
+      <SettingsRow
+        title={gt("Working folder")}
+        description={
+          folder ? <code className="break-all">{folder}</code> : gt("Checkout unavailable")
+        }
+      />
+      <SettingsRow
+        title={gt("Configured skills")}
+        description={skills?.length ? skills.join(", ") : gt("No skills configured")}
+      />
+    </SettingsSection>
   );
 }
 

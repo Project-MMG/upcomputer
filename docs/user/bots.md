@@ -132,6 +132,21 @@ account, recipient, and saved reply in the thread, then choose **Approve & send*
 uncertain, check Sent in Gmail before sending another reply. A bot with a Gmail workspace uses
 this approval flow for Gmail writes.
 
+## Review and save a Search Console bot app
+
+Connect Google Search Console in the bot's project. Under **Individual actions**, assign
+**Search Analytics Query** to the bot and set `site_url` to the exact Search Console property.
+Ask the bot to propose an app for one page and date range, with a fix and a link to review it.
+
+Open **Bot Apps** in the right pane or Bot Settings and choose **Review proposal**. Inspect the
+account, property, report window, and fix preview. Save a review note if the bot should revise the
+proposal, then ask it to check the note. **Approve app** saves the reviewed report and preview
+link. To see a newer report, ask the bot for another proposal.
+
+If the account or action becomes unavailable, the app keeps its saved report and hides its data.
+Restore the original connection and assignment, then choose **Check access**. A report from a
+different account needs its own review.
+
 ## Bot status
 
 A bot's row shows the same statuses as a thread row, and also counts its background work:

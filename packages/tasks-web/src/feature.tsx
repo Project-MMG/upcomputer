@@ -17,7 +17,12 @@ import {
   type ExperimentalWebThreadRowAccessoryProps,
 } from "../../../apps/web/src/product/WebFeature.ts";
 import { TasksWebRpcGroup } from "./rpc/tasksRpcGroup.ts";
-import { GmailWorkspaceRpcGroup, ProjectToolsRpcGroup } from "@t3tools/tasks-contracts/v1";
+import {
+  BotAppsRpcGroup,
+  GmailWorkspaceRpcGroup,
+  ProjectToolsRpcGroup,
+} from "@t3tools/tasks-contracts/v1";
+import { savedBotAppSurfaceId } from "./botApps/surface.ts";
 import { gmailWorkspaceSurfaceId } from "./gmailWorkspace/surface.ts";
 
 const LazyProjectTools = lazy(() => import("./projectTools/ProjectToolsPanel.tsx"));
@@ -115,7 +120,7 @@ function ChatHeaderRunCounts(props: ExperimentalWebThreadAccessoryProps) {
 export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
   id: "upcomputer.tasks.web",
   version: 1,
-  rpcGroups: [TasksWebRpcGroup, ProjectToolsRpcGroup, GmailWorkspaceRpcGroup],
+  rpcGroups: [TasksWebRpcGroup, ProjectToolsRpcGroup, GmailWorkspaceRpcGroup, BotAppsRpcGroup],
   projectTools: (props) => (
     <Suspense fallback={null}>
       <LazyProjectTools {...props} />
@@ -149,6 +154,12 @@ export const TASKS_WEB_FEATURE = defineExperimentalWebFeature({
       label: msg("Gmail inbox"),
       icon: InboxIcon,
       load: () => import("./gmailWorkspace/GmailWorkspacePanel.tsx"),
+    },
+    {
+      id: savedBotAppSurfaceId,
+      label: msg("Bot app"),
+      icon: LayoutGridIcon,
+      load: () => import("./botApps/BotAppPanel.tsx"),
     },
     {
       id: "bot-apps",

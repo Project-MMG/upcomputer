@@ -190,6 +190,20 @@ time before you approve the app. Ask the bot for another proposal to refresh the
 After saving the app, ask the store bot to assign one catalog follow-up to your Website bot.
 The catalog brief includes the product, the work to do, and the link to Shopify Admin.
 
+## Review Google Ads and Meta Ads
+
+Connect Google Ads and Meta Ads in the bot's project. Under **Individual actions** in **Tools**,
+assign **Search GAQL** to the bot with its ten-digit `customer_id` fixed. Assign **Get Insights**
+with `object_id` fixed and **List Ad Creatives** with `ad_account_id` fixed to the same Meta account
+ID, including its `act_` prefix.
+
+Ask the bot to propose a Paid Media app for a date range, a Meta conversion action, and one
+Google Ads campaign with its own daily budget. Open **Bot Apps** in the right pane or in
+**Bot Settings** and choose **Review proposal**. Switch between the account reports to check
+spend, conversion reporting, and creative. The campaign proposal shows the current daily budget,
+proposed daily budget, and measurement plan. **Save report** keeps the reviewed snapshot for
+reopening. Apply any budget decision separately in Google Ads.
+
 ## Remove a bot
 
 Click **Remove bot** at the bottom of the bot's page. This deletes its memory. Its chat goes back

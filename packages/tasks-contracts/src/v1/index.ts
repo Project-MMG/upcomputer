@@ -9,3 +9,4 @@ export * from "./rpc.ts";
 export * from "./schedule.ts";
 export * from "./tasks.ts";
 export * from "./shopifyStore.ts";
+export * from "./paidMedia.ts";

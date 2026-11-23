@@ -86,6 +86,8 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 // list them; their server contributions declare the same scopes.
 const CLIENT_GUARDED_FEATURE_RPC_SCOPES = {
   "upcomputer.bot-apps.v1.review": AuthOrchestrationOperateScope,
+  "upcomputer.bot-work.v1.configure": AuthOrchestrationOperateScope,
+  "upcomputer.bot-work.v1.review": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.save": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.remove": AuthOrchestrationOperateScope,
   "upcomputer.bots.v1.remember": AuthOrchestrationOperateScope,

@@ -104,6 +104,25 @@ The environment owner sets up Composio by saving a project API key as plain text
 installation, that directory is `~/.upcomputer/userdata`. Restrict the file to the
 server user, then refresh Tools.
 
+## Coordinate work and set up a specialist
+
+In the coordinating bot’s settings, open **Bot Apps** and choose **Add team dashboard**.
+Open it from those settings or from **Bot Apps** in the chat’s right pane. The dashboard
+links to project priorities, blockers, approvals, completed handoffs, and the bots that own
+the work. Ask the coordinating bot to assign a task and give it the expected outcome.
+Open the completed task to see its result.
+
+Ask the coordinating bot to propose a specialist using the project’s playbook. Review the
+role, workstream folder, instructions, skill references, requested account and actions, and
+the assigned-work app in the dashboard. You can edit, reject, or approve the proposal.
+Approval saves the bot and its app in the project. Setup reuses a bot with the same name in
+that project and keeps its existing profile. New specialists get their workstream folder
+and skill references in their instructions and share the project checkout.
+
+Open the specialist’s **Tools** settings to confirm the connected account and grant the
+requested actions. The proposal records the requests. Project tool assignments take
+effect when you save them in **Tools**.
+
 ## Open a Gmail inbox beside a bot chat
 
 Connect Gmail in the bot's project and assign **Fetch emails** and **Fetch Message by Thread ID** to

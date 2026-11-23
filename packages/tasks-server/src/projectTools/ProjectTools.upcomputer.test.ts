@@ -1486,7 +1486,7 @@ it.effect(
           threadId: elsewhere.threadId,
           botId: elsewhere.agent.id,
         }),
-      ).toEqual({ saved: null, proposal: null });
+      ).toEqual({ saved: null, proposal: null, work: null });
       yield* review({
         ...input,
         decision: { kind: "annotate", note: "Show which sizes are supported." },
@@ -1500,7 +1500,7 @@ it.effect(
         note: "Show which sizes are supported.",
       });
       yield* review({ ...owner, revision: annotated.snapshot.revision, decision });
-      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: null });
+      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: null, work: null });
       expect(backend.calls).toHaveLength(1);
 
       backend.setSearchReport({ responseAggregationType: "byPage" });
@@ -1510,7 +1510,7 @@ it.effect(
         rows: [{ ...websiteReport.rows[0], keys: ["https://ambient.example.test/"] }],
       });
       expect(code(yield* api.proposeApp(websiteProposal))).toBe("report-invalid");
-      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: null });
+      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: null, work: null });
       backend.setSearchReport({ successful: true, data: websiteReport });
       const revised = content(yield* api.proposeApp(websiteProposal));
       const revision = Schema.decodeUnknownEffect(Schema.Struct({ revision: Schema.String }));
@@ -1550,12 +1550,13 @@ it.effect(
       expect(yield* getState(owner)).toEqual({
         saved: { status: "unavailable", revision: annotated.snapshot.revision },
         proposal: { status: "unavailable", revision: pending.snapshot.revision },
+        work: null,
       });
       expect(
         yield* Effect.flip(review({ ...owner, revision: pending.snapshot.revision, decision })),
       ).toMatchObject({ code: "not-assigned" });
       yield* tools.grant(grant);
-      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: pending });
+      expect(yield* getState(owner)).toEqual({ saved: annotated, proposal: pending, work: null });
       yield* tools.connection({ ...connection, operation: "disconnect" });
       yield* tools.connection({ ...connection, operation: "start" });
       const replacement = Array.from(backend.accounts.values()).find(
@@ -1576,6 +1577,7 @@ it.effect(
       expect(yield* getState(owner)).toEqual({
         saved: null,
         proposal: { status: "unavailable", revision: pending.snapshot.revision },
+        work: null,
       });
       yield* review({
         ...owner,

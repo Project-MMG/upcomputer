@@ -319,7 +319,17 @@ const appSlot = Schema.NullOr(
     Schema.Struct({ status: Schema.Literal("unavailable"), revision }),
   ]),
 );
-const BotAppState = Schema.Struct({ saved: appSlot, proposal: appSlot });
+export const BotWorkApp = Schema.Union([
+  Schema.Struct({ view: Schema.Literal("team") }),
+  Schema.Struct({ view: Schema.Literal("assigned"), title }),
+]);
+export type BotWorkApp = typeof BotWorkApp.Type;
+
+const BotAppState = Schema.Struct({
+  saved: appSlot,
+  proposal: appSlot,
+  work: Schema.optionalKey(Schema.NullOr(BotWorkApp)),
+});
 export type BotAppState = typeof BotAppState.Type;
 
 export const BotAppReviewInput = Schema.Struct({

@@ -41,6 +41,7 @@ import {
   shopifyStoreAction,
 } from "./shopifyStore.ts";
 import { readMetrics, sourceAction } from "./searchConsole.ts";
+import { decodeWorkApp } from "./workAppJson.ts";
 
 type Invocation = McpInvocationContext["Service"];
 type AppError = BotAppError | ProjectToolError;
@@ -126,11 +127,15 @@ const make = Effect.gen(function* () {
   const socialSchedule = yield* makeSocialSchedule;
 
   const load = Effect.fn("BotApps.load")(function* ({ projectId, botId }: BotAppTarget) {
-    const [row] = yield* sql<{ proposal: string | null; saved: string | null }>`
-      SELECT proposal_json AS proposal, saved_json AS saved FROM bot_apps
+    const [row] = yield* sql<{
+      proposal: string | null;
+      saved: string | null;
+      work: string | null;
+    }>`
+      SELECT proposal_json AS proposal, saved_json AS saved, work_app_json AS work FROM bot_apps
       WHERE project_id = ${projectId} AND bot_id = ${botId}
     `.pipe(Effect.mapError(storageError));
-    return row ?? { proposal: null, saved: null };
+    return row ?? { proposal: null, saved: null, work: null };
   });
 
   const outboundOwnerName = Effect.fn("BotApps.outboundOwnerName")(function* (
@@ -374,7 +379,11 @@ const make = Effect.gen(function* () {
       const row = yield* load(target);
       const saved = yield* slot(target, row.saved, row.proposal === null);
       const proposal = yield* slot(target, row.proposal);
-      return { saved, proposal };
+      const work =
+        row.work === null
+          ? null
+          : yield* decodeWorkApp(row.work).pipe(Effect.mapError(storageError));
+      return { saved, proposal, work };
     }),
     proposal: Effect.fn("BotApps.proposal")(function* (caller) {
       const owner = yield* tools.confirmCaller(caller);

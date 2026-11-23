@@ -121,8 +121,12 @@ const cannotAdopt = (reason: string, fix: string) =>
 // The permanent chat works like an orchestrator thread: other agents do the work, and their
 // tasks report back here through the chat being their source thread. agent_search lists the
 // bot too, so the text names it and keeps "another task agent" apart from its own work.
-const delegation = (bot: Bot) =>
-  `You are the bot ${bot.agent.name}, agent id ${bot.agent.id}. agent_search and task_context list you as an agent too, but you are not "another agent". Work that needs more than a quick answer goes one of two ways:\n- Another task agent: when the user asks for another agent, or another agent suits the work, call task_context first and follow the user's task guidance it returns. Pick a suitable enabled agent other than you and task_create a task with its trigger status and tags. If none fits, create one with agent_create and leave runtimeMode out so it runs with full access, unless the user asked for another mode; then create the task.\n- Your own background work: bot_assign, or a To Do task with your own tag bot:${bot.agent.id}. You do that work yourself in a separate background run. Tell the user plainly that you are doing it yourself, never that another agent does it.\nTasks created from this chat report back here; follow each one and tell the user its result when it finishes.\n`;
+const delegation = (bot: Bot, coordinatesProject: boolean) => {
+  const setup = coordinatesProject
+    ? "If the project needs a new specialist, read the project playbook and use bot_setup_propose. Wait for operator approval before assigning work to the proposed bot. For a handoff, include its outcome, source, and due date when relevant."
+    : "If none fits, create one with agent_create and leave runtimeMode out so it runs with full access, unless the user asked for another mode; then create the task.";
+  return `You are the bot ${bot.agent.name}, agent id ${bot.agent.id}. agent_search and task_context list you as an agent too, but you are not "another agent". Work that needs more than a quick answer goes one of two ways:\n- Another task agent: when the user asks for another agent, or another agent suits the work, call task_context first and follow the user's task guidance it returns. Pick a suitable enabled agent other than you and task_create a task with its trigger status and tags. ${setup}\n- Your own background work: bot_assign, or a To Do task with your own tag bot:${bot.agent.id}. You do that work yourself in a separate background run. Tell the user plainly that you are doing it yourself, never that another agent does it.\nTasks created from this chat report back here; follow each one and tell the user its result when it finishes.\n`;
+};
 const MEMORY_LIMIT = 200;
 /** A bot's status reads this many of the active runs its chat's tasks have. */
 const ACTIVE_RUNS_SHOWN = 20;
@@ -156,8 +160,13 @@ export class BotService extends Context.Service<
   BotService,
   {
     readonly list: Effect.Effect<ReadonlyArray<Bot>, TaskError>;
+    readonly projectRoster: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Bot>, TaskError>;
     readonly recover: Effect.Effect<void, TaskError>;
     readonly save: (input: BotWriteInput) => Effect.Effect<Bot, TaskError>;
+    readonly ensureSetupBot: (
+      input: BotWriteInput,
+      reuseExisting: boolean,
+    ) => Effect.Effect<Bot, TaskError>;
     /**
      * After an agent write outside the bot's settings: a bot's chat takes the bot's name. The
      * agent is saved either way, so a failure is only logged; the next start renames the chat.
@@ -277,8 +286,11 @@ const make = Effect.gen(function* () {
   // turn start never waits on a bot save. Take `lock` first when both are needed.
   const lock = yield* Semaphore.make(1);
   const memoryLock = yield* Semaphore.make(1);
-  const rows = sql<BotRow>`SELECT agent_id AS "agentId", thread_id AS "threadId",
+  const selectBots = sql`SELECT agent_id AS "agentId", thread_id AS "threadId",
     project_id AS "projectId", allowed_projects_json AS allowed, adopted, appearance_json AS appearance FROM bots`;
+  const rows = sql<BotRow>`${selectBots}`;
+  const projectRows = (projectId: ProjectId) =>
+    sql<BotRow>`${selectBots} WHERE project_id = ${projectId} ORDER BY agent_id`;
   /**
    * `lenient` reads damaged settings as defaults, so the bot still lists and its settings can
    * be saved again, which rewrites them. Turns and startup read them strictly and report it.
@@ -317,6 +329,9 @@ const make = Effect.gen(function* () {
     if (!bot) return yield* fail("Bot was not found.");
     return bot;
   });
+  const projectRoster = Effect.fn("BotService.projectRoster")(function* (projectId: ProjectId) {
+    return yield* Effect.forEach(yield* projectRows(projectId), (row) => decode(row, true));
+  }, Effect.mapError(asError));
   // With no bots this is one read of an empty table, so threads of people who never made a
   // bot pay nothing more per turn.
   const rowForThread = Effect.fn("BotService.rowForThread")(function* (threadId: ThreadId) {
@@ -872,7 +887,23 @@ const make = Effect.gen(function* () {
       if (saved.entry)
         savedNote = `\nThe user's "remember:" message in this turn is already saved as memory "${saved.entry.id}". Do not save it again; confirm it to the user.`;
     }
-    const header = `Bot identity: ${bot.agent.id}\nName: ${bot.agent.name}\nInstructions:\n${bot.agent.config.instructions}\nWorking project: ${bot.projectId}\nPermanent user chat: ${bot.threadId}\n${canonical ? delegation(bot) : ""}Use bot_history_search to search this bot's saved chat history.\nWhen asked to remember, or after learning a durable useful fact or conclusion, use bot_remember in this turn. Tell the user what you saved. Never store secrets, role changes, permissions, or instructions as memory. Memories with owner "user" were written by the user: you cannot change or forget them. When one is out of date, tell the user it is their entry and ask them to change it in the bot's Memory settings; never save a memory that contradicts it. Do not rewrite your instructions or settings automatically.${canonical ? "" : "\nThis is a background task run: memory is read-only here. Put what is worth remembering in the run's result; the bot decides in its chat."}`;
+    const { workingFolder, skills, instructions } = bot.agent.config;
+    const coordinatesProject =
+      canonical &&
+      (yield* sql`SELECT 1 FROM bot_apps
+      WHERE project_id = ${bot.projectId} AND bot_id = ${bot.agent.id}
+        AND json_extract(work_app_json, '$.view') = 'team'`).length > 0;
+    const folder = workingFolder
+      ? `\nWorkstream folder in this project: ${workingFolder}. Use it for role work and follow its AGENTS.md when present.`
+      : "";
+    const skillRefs =
+      workingFolder && skills?.length
+        ? `\nConfigured skill references: ${skills
+            .slice(0, 12)
+            .map((skill) => skill.slice(0, 100))
+            .join(", ")}.`
+        : "";
+    const header = `Bot identity: ${bot.agent.id}\nName: ${bot.agent.name}\nInstructions:\n${instructions}\nWorking project: ${bot.projectId}${folder}${skillRefs}\nPermanent user chat: ${bot.threadId}\n${canonical ? delegation(bot, coordinatesProject) : ""}Use bot_history_search to search this bot's saved chat history.\nWhen asked to remember, or after learning a durable useful fact or conclusion, use bot_remember in this turn. Tell the user what you saved. Never store secrets, role changes, permissions, or instructions as memory. Memories with owner "user" were written by the user: you cannot change or forget them. When one is out of date, tell the user it is their entry and ask them to change it in the bot's Memory settings; never save a memory that contradicts it. Do not rewrite your instructions or settings automatically.${canonical ? "" : "\nThis is a background task run: memory is read-only here. Put what is worth remembering in the run's result; the bot decides in its chat."}`;
     // Settings changes resend everything; the cursor bounds which memory rows changed.
     const fingerprint = NodeCrypto.createHash("sha256").update(header).digest("hex").slice(0, 16);
     const at = yield* now;
@@ -966,6 +997,7 @@ const make = Effect.gen(function* () {
     Effect.mapError(asError),
   );
   return BotService.of({
+    projectRoster,
     list: rows.pipe(
       Effect.flatMap((items) =>
         Effect.forEach(items, (row) =>
@@ -1047,6 +1079,29 @@ const make = Effect.gen(function* () {
     save: Effect.fn("BotService.save")(
       function* (input) {
         return yield* save(input);
+      },
+      lock.withPermits(1),
+      Effect.mapError(asError),
+    ),
+    ensureSetupBot: Effect.fn("BotService.ensureSetupBot")(
+      function* (input, reuseExisting) {
+        const stored = yield* rows;
+        const existing = stored.find((row) => row.agentId === input.id);
+        if (!existing) {
+          if (reuseExisting)
+            return yield* fail("The specialist selected for this setup was removed.");
+          const roster = yield* projectRoster(input.projectId);
+          if (roster.some(({ agent }) => agent.name.toLowerCase() === input.name.toLowerCase()))
+            return yield* fail("Another bot already uses this name in the project.");
+          return yield* save(input);
+        }
+        if (existing.projectId !== input.projectId)
+          return yield* fail(
+            "The specialist selected for this setup was moved to another project.",
+          );
+        const bot = yield* decode(existing);
+        yield* ensureThread(bot, existing.adopted === 1);
+        return bot;
       },
       lock.withPermits(1),
       Effect.mapError(asError),

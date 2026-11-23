@@ -3,13 +3,24 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 import {
+  assignHandoffPrompt,
+  checkInboxPrompt,
+  createInboxPrompt,
   customerQuestion,
+  firstDraftOpening,
   gmailFixtureDraftNote,
   gmailFixtureEditedReply,
   gmailFixtureLayoutNote,
   gmailFixtureReplacement,
   gmailFixtureSelectedText,
+  handoff,
+  handoffDescription,
+  inboxBotId,
+  inboxInstructions,
   receipt,
+  rejectedQuestion,
+  retro,
+  websiteBotId,
 } from "./gmail-workspace-data.ts";
 
 type McpServer = {
@@ -27,6 +38,7 @@ type ToolResult = {
   readonly content: readonly { readonly text: string }[];
   readonly structuredContent?: { readonly code: string };
 };
+type ToolCall = (name: string, args: object) => Promise<ToolResult>;
 
 const model = { modelId: "workspace", name: "Scripted Gmail workspace" };
 const models = { currentModelId: model.modelId, availableModels: [model] };
@@ -38,7 +50,7 @@ const send = (frame: object) =>
 async function withMcp<A>(
   endpoint: string,
   authorization: string,
-  run: (call: (name: string, args: object) => Promise<ToolResult>) => Promise<A>,
+  run: (call: ToolCall) => Promise<A>,
 ) {
   const url = new URL(endpoint);
   if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")
@@ -84,6 +96,42 @@ function readResult(result: ToolResult): unknown {
   return JSON.parse(result.content[0]?.text ?? "null");
 }
 
+async function completedHandoff(call: ToolCall) {
+  const { task } = readResult(await call("task_get", { id: handoff.id })) as {
+    readonly task: {
+      readonly status: string;
+      readonly description: string;
+      readonly output: string;
+    };
+  };
+  if (task.status !== "Done" || task.description !== handoffDescription || !task.output)
+    throw new Error("The Website task did not return a completed result for the scoped brief.");
+  return task.output;
+}
+
+async function assignHandoff(call: ToolCall) {
+  const { agents } = readResult(await call("task_context", {})) as {
+    readonly agents: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+      readonly startTags: ReadonlyArray<string>;
+    }>;
+  };
+  const owner = agents.find(({ id }) => id === websiteBotId);
+  if (!owner) throw new Error("The Website bot was not available to Chief in this project.");
+  readResult(
+    await call("task_create", {
+      id: handoff.id,
+      title: handoff.title,
+      description: handoffDescription,
+      status: "To Do",
+      audience: "agent",
+      tags: owner.startTags,
+    }),
+  );
+  return `Assigned the delivery FAQ check to ${owner.name}.`;
+}
+
 async function runPrompt({ sessionId, prompt }: Prompt) {
   const session = sessions.get(sessionId);
   const server = session?.mcpServers.find(({ name }) => name === "t3-code");
@@ -95,18 +143,67 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
   const revised = text.includes("Revise the Gmail workspace");
   const annotation =
     /<context kind="gmail-workspace-annotation" id="([^"]+)">\n(.+)\n<\/context>/u.exec(text);
-  if (!annotation && !revised && !text.includes("Read AGENTS.md and bots/email/AGENTS.md")) {
-    throw new Error("The turn did not include the bot's Home Repo instructions.");
-  }
-  const [shared, playbook] = await Promise.all([
-    NodeFSP.readFile(NodePath.join(session.cwd, "AGENTS.md"), "utf8"),
-    NodeFSP.readFile(NodePath.join(session.cwd, "bots/email/AGENTS.md"), "utf8"),
-  ]);
-  const prefix = /^Workspace title prefix: (.+)$/m.exec(shared)?.[1];
-  const row = (revised ? /^Revise: (.+) \((.+)\)$/m : /^Create: (.+) \((.+)\)$/m).exec(playbook);
-  if (prefix === undefined || !row?.[1] || !row[2])
-    throw new Error("The fixture playbook did not describe a layout.");
+  const read = (path: string) => NodeFSP.readFile(NodePath.join(session.cwd, path), "utf8");
   const output = await withMcp(endpoint, authorization, async (call) => {
+    if (text.includes("Assigned task:") && text.includes(`- id: ${handoff.id}`)) {
+      const brief = /\nDescription:\n([\s\S]*?)\nMetadata:/u.exec(text)?.[1]?.trim();
+      if (
+        !text.includes(`- agentId: ${websiteBotId}`) ||
+        brief !== handoffDescription ||
+        [
+          "jordan@example.test",
+          customerQuestion.threadId,
+          customerQuestion.subject,
+          customerQuestion.messageText,
+        ].some((mail) => text.includes(mail))
+      )
+        throw new Error("The Website run received the wrong owner or handoff context.");
+      const faq = await read(handoff.sitePath);
+      if (
+        !faq.includes("The delivery FAQ gives an initial estimate.") ||
+        faq.includes("order tracking")
+      )
+        throw new Error("The fixture site did not support the proposed FAQ change.");
+      const result = { status: "Done", summary: handoff.result, blocked: false, events: [] };
+      return `Website reviewed the delivery FAQ.\n\n~~~task_agent_result\n${JSON.stringify(result)}\n~~~`;
+    }
+    if (text.includes(assignHandoffPrompt)) return assignHandoff(call);
+    if (
+      text.includes("A task-agent run finished for a task created in this chat:") &&
+      text.includes(handoff.id)
+    ) {
+      return `Website reported: ${await completedHandoff(call)}`;
+    }
+    if (text.includes(handoff.preparePrompt)) {
+      if (!(await read(handoff.sourcePath)).includes("## Delivery estimates"))
+        throw new Error("The Inbox bot could not verify the source for the handoff.");
+      return `Website handoff ready.\n\n${handoffDescription}`;
+    }
+    if (text.includes(retro.prompt)) {
+      const [procedure, source, outcome] = await Promise.all([
+        read(retro.skill),
+        read(handoff.sourcePath),
+        completedHandoff(call),
+      ]);
+      const proposal = /^Propose: (.+)$/mu.exec(procedure)?.[1];
+      if (!proposal || !source.includes("## Delivery estimates"))
+        throw new Error("The retrospective needs its local instructions and source.");
+      const file = NodePath.join(session.cwd, retro.path);
+      await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true });
+      await NodeFSP.writeFile(
+        file,
+        [
+          "# Inbox retrospective",
+          "",
+          `Evidence: ${handoff.id} and ${handoff.source}`,
+          `Outcome: ${outcome}`,
+          `Proposed improvement: ${proposal}`,
+          "Owner: Inbox",
+          "",
+        ].join("\n"),
+      );
+      return "Saved the Inbox retrospective for operator review.";
+    }
     if (annotation?.[1] && annotation[2]) {
       const { botId, target } = JSON.parse(annotation[2]) as {
         readonly botId: string;
@@ -120,13 +217,12 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
           readonly order?: string;
         };
       };
-      if (botId !== "vt-email") throw new Error("Annotation did not go to the Email bot.");
+      if (botId !== inboxBotId) throw new Error("Annotation did not go to the Email bot.");
       const annotationId = annotation[1];
       if (target.kind === "draft") {
         if (
           !text.includes(gmailFixtureDraftNote) ||
           target.gmailThreadId !== customerQuestion.threadId ||
-          target.revision !== 4 ||
           target.start !== gmailFixtureEditedReply.indexOf(gmailFixtureSelectedText) ||
           target.text !== gmailFixtureSelectedText
         )
@@ -157,18 +253,32 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
       );
       return "Moved the inbox above the thread reader.";
     }
-    if (!text.includes("Check the Gmail inbox for new mail.")) {
+    const [shared, playbook, voice] = await Promise.all([
+      read("AGENTS.md"),
+      read("inbox/AGENTS.md"),
+      read("inbox/voice.md"),
+    ]);
+    const signoff = /^Sign-off: (.+)$/mu.exec(voice)?.[1];
+    if (!signoff) throw new Error("The approved fixture voice needs a sign-off.");
+    if (text.includes(createInboxPrompt) || revised) {
+      const prefix = /^Workspace title prefix: (.+)$/mu.exec(shared)?.[1];
+      const row = (revised ? /^Revise: (.+) \((.+)\)$/mu : /^Create: (.+) \((.+)\)$/mu).exec(
+        playbook,
+      );
+      if (!prefix || !row?.[1] || !row[2])
+        throw new Error("The fixture playbook did not describe a layout.");
       const result = readResult(
         await call("gmail_workspace_save", { title: `${prefix} ${row[1]}`, order: row[2] }),
       ) as { readonly title: string };
-      return `Saved ${result.title} from the Home Repo and Email playbook.`;
+      const guidance = text.includes(inboxInstructions)
+        ? " Loaded the approved voice guidance."
+        : "";
+      return `Saved ${result.title} from the Inbox playbook.${guidance}`;
     }
-    const review = /^Review with: (.+)$/m.exec(playbook)?.[1];
-    const signoff = /^Sign-off: (.+)$/m.exec(shared)?.[1];
-    if (review !== "gmail_workspace_check" || !signoff) {
+    if (!text.includes(checkInboxPrompt) || !playbook.includes("gmail_workspace_check")) {
       throw new Error("The fixture playbook did not describe inbox review.");
     }
-    const checked = await call(review, {});
+    const checked = await call("gmail_workspace_check", {});
     const errorCode = checked.structuredContent?.code;
     if (checked.isError) return `Gmail check blocked by ${errorCode}.`;
     const { accountId, candidates } = readResult(checked) as {
@@ -181,21 +291,23 @@ async function runPrompt({ sessionId, prompt }: Prompt) {
     if (candidates.length === 0) return "No new inbox messages to review.";
     let drafted = 0;
     for (const { gmailThreadId, messageId } of candidates) {
-      if (messageId !== customerQuestion.messageId && messageId !== receipt.messageId) {
+      const draft =
+        messageId === customerQuestion.messageId
+          ? `${firstDraftOpening} and get back to you.`
+          : messageId === rejectedQuestion.messageId
+            ? "Hi Morgan, we’ll check with the courier about the delivery instructions."
+            : null;
+      if (draft === null && messageId !== receipt.messageId)
         throw new Error("Unexpected inbox candidate in the fixture.");
-      }
       const record = readResult(
         await call("gmail_workspace_record_reply", {
           accountId,
           gmailThreadId,
           messageId,
-          body:
-            messageId === receipt.messageId
-              ? null
-              : `Hi Jordan, we’ll check the date for order VT-204 and get back to you.\n\n${signoff}`,
+          body: draft === null ? null : `${draft}\n\n${signoff}`,
         }),
       ) as { readonly recorded: boolean };
-      if (record.recorded && messageId === customerQuestion.messageId) drafted += 1;
+      if (record.recorded && draft !== null) drafted += 1;
     }
     return `Gmail check queued ${drafted} reply draft.`;
   });
